@@ -1,29 +1,17 @@
-import type { Metadata } from "next";
-import "./globals.css";
-import { Sidebar } from "@/components/sidebar";
+import type { Metadata } from "next"
+import "./globals.css"
 
 export const metadata: Metadata = {
-  title: "Jimmy",
+  title: "Jimmy — AI Gateway",
   description: "AI Gateway Dashboard",
-};
+}
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body
-        className="bg-white text-neutral-900 antialiased"
-        style={{
-          fontFamily:
-            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-        }}
-      >
-        <Sidebar />
-        <main className="ml-56 min-h-screen p-8">{children}</main>
+    <html lang="en" data-theme="dark" suppressHydrationWarning>
+      <body>
+        {children}
       </body>
     </html>
-  );
+  )
 }

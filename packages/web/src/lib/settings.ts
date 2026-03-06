@@ -15,7 +15,7 @@ export interface JimmySettings {
   employeeOverrides: Record<string, EmployeeOverride>
 }
 
-const DEFAULTS: JimmySettings = {
+export const DEFAULTS: JimmySettings = {
   accentColor: null,
   portalName: null,
   portalSubtitle: null,

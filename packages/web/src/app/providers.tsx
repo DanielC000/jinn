@@ -1,0 +1,43 @@
+"use client"
+
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
+import type { ThemeId } from '@/lib/themes'
+
+interface ThemeContextValue {
+  theme: ThemeId
+  setTheme: (t: ThemeId) => void
+}
+
+const ThemeContext = createContext<ThemeContextValue>({ theme: 'dark', setTheme: () => {} })
+
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setThemeState] = useState<ThemeId>('dark')
+
+  const apply = useCallback((t: ThemeId) => {
+    setThemeState(t)
+    localStorage.setItem('jimmy-theme', t)
+    const el = document.documentElement
+    el.removeAttribute('data-theme')
+    if (t === 'system') {
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+      el.setAttribute('data-theme', prefersDark ? 'dark' : 'light')
+    } else {
+      el.setAttribute('data-theme', t)
+    }
+  }, [])
+
+  useEffect(() => {
+    const saved = localStorage.getItem('jimmy-theme') as ThemeId | null
+    if (saved) apply(saved)
+  }, [apply])
+
+  return (
+    <ThemeContext.Provider value={{ theme, setTheme: apply }}>
+      {children}
+    </ThemeContext.Provider>
+  )
+}
+
+export function useTheme() {
+  return useContext(ThemeContext)
+}
