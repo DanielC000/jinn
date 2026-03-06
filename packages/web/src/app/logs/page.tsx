@@ -1,160 +1,319 @@
-"use client";
-import { useEffect, useRef, useState, useCallback } from "react";
-import { api } from "@/lib/api";
+"use client"
 
-interface LogLine {
-  level: string;
-  message: string;
-  timestamp?: string;
-  [key: string]: unknown;
-}
+import { useCallback, useEffect, useState } from "react"
+import { RefreshCw, Radio } from "lucide-react"
+import { api } from "@/lib/api"
+import { PageLayout } from "@/components/page-layout"
+import { LogBrowser, parseLogLine } from "@/components/activity/log-browser"
 
-const LEVEL_COLORS: Record<string, string> = {
-  debug: "text-neutral-400",
-  info: "text-neutral-300",
-  warn: "text-yellow-400",
-  error: "text-red-400",
-};
+/* ── Summary Cards ─────────────────────────────────────────────── */
 
-const LEVEL_BADGE: Record<string, string> = {
-  debug: "text-neutral-500",
-  info: "text-blue-400",
-  warn: "text-yellow-400",
-  error: "text-red-400",
-};
-
-function parseLine(raw: unknown): LogLine {
-  if (typeof raw === "string") {
-    const lower = raw.toLowerCase();
-    let level = "info";
-    if (lower.includes("[error]") || lower.includes('"level":"error"')) level = "error";
-    else if (lower.includes("[warn]") || lower.includes('"level":"warn"')) level = "warn";
-    else if (lower.includes("[debug]") || lower.includes('"level":"debug"'))
-      level = "debug";
-    return { level, message: raw };
-  }
-  const obj = raw as Record<string, unknown>;
-  return {
-    level: (obj.level as string) || "info",
-    message: (obj.message as string) || (obj.msg as string) || JSON.stringify(raw),
-    timestamp: (obj.timestamp as string) || (obj.time as string) || undefined,
-  };
-}
-
-export default function LogsPage() {
-  const [lines, setLines] = useState<LogLine[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<string>("all");
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const autoScroll = useRef(true);
-
-  const fetchLogs = useCallback(() => {
-    api
-      .getLogs(100)
-      .then((data) => {
-        const d = data as Record<string, unknown>;
-        const raw = (d.lines as unknown[]) || (d.logs as unknown[]) || [];
-        setLines(raw.map(parseLine));
-        setError(null);
-      })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
-  }, [fetchLogs]);
-
-  useEffect(() => {
-    if (autoScroll.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [lines]);
-
-  function handleScroll() {
-    if (!scrollRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-    autoScroll.current = scrollHeight - scrollTop - clientHeight < 40;
-  }
-
-  const filtered =
-    filter === "all" ? lines : lines.filter((l) => l.level === filter);
-
+function SummaryCard({
+  label,
+  value,
+  color,
+  pulse,
+}: {
+  label: string
+  value: number
+  color?: string
+  pulse?: boolean
+}) {
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)]">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold tracking-tight">Logs</h2>
-          <p className="text-sm text-neutral-500 mt-1">Gateway log output</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <select
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            className="text-sm border border-neutral-200 rounded-lg px-3 py-1.5 bg-white text-neutral-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="all">All Levels</option>
-            <option value="debug">Debug</option>
-            <option value="info">Info</option>
-            <option value="warn">Warn</option>
-            <option value="error">Error</option>
-          </select>
-          <button
-            onClick={() => {
-              setLoading(true);
-              fetchLogs();
-            }}
-            className="px-3 py-1.5 text-sm font-medium text-neutral-600 bg-neutral-100 rounded-lg hover:bg-neutral-200 transition-colors"
-          >
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      {error && (
-        <div className="mb-4 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
-          Failed to load logs: {error}
-        </div>
-      )}
-
+    <div
+      style={{
+        background: "var(--material-regular)",
+        border: "1px solid var(--separator)",
+        borderRadius: "var(--radius-md)",
+        padding: "var(--space-4)",
+      }}
+    >
       <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="flex-1 rounded-xl bg-neutral-900 border border-neutral-700 overflow-y-auto font-mono text-xs leading-5"
+        style={{
+          fontSize: "var(--text-caption1)",
+          color: "var(--text-tertiary)",
+          fontWeight: "var(--weight-medium)",
+          marginBottom: "var(--space-1)",
+        }}
       >
-        {loading ? (
-          <p className="px-4 py-6 text-neutral-500">Loading logs...</p>
-        ) : filtered.length === 0 ? (
-          <p className="px-4 py-6 text-neutral-500 text-center">
-            {filter === "all" ? "No log entries" : `No ${filter} entries`}
-          </p>
-        ) : (
-          <div className="px-4 py-3">
-            {filtered.map((line, i) => (
-              <div key={i} className="flex gap-2 py-0.5 hover:bg-neutral-800/50">
-                {line.timestamp && (
-                  <span className="text-neutral-600 shrink-0">
-                    {line.timestamp}
-                  </span>
-                )}
-                <span
-                  className={`uppercase w-12 shrink-0 text-right ${
-                    LEVEL_BADGE[line.level] || "text-neutral-500"
-                  }`}
-                >
-                  {line.level}
-                </span>
-                <span className={LEVEL_COLORS[line.level] || "text-neutral-300"}>
-                  {line.message}
-                </span>
-              </div>
-            ))}
-          </div>
+        {label}
+      </div>
+      <div className="flex items-center" style={{ gap: "var(--space-2)" }}>
+        {pulse && value > 0 && (
+          <span
+            className="animate-error-pulse"
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: "var(--system-red)",
+              flexShrink: 0,
+            }}
+          />
         )}
+        <span
+          style={{
+            fontSize: "var(--text-title2)",
+            fontWeight: "var(--weight-bold)",
+            color: color ?? "var(--text-primary)",
+          }}
+        >
+          {value}
+        </span>
       </div>
     </div>
-  );
+  )
+}
+
+/* ── Page ──────────────────────────────────────────────────────── */
+
+export default function LogsPage() {
+  const [lines, setLines] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [lastRefresh, setLastRefresh] = useState<Date>(new Date())
+  const [updatedAgo, setUpdatedAgo] = useState("just now")
+
+  const refresh = useCallback(() => {
+    setRefreshing(true)
+    setError(null)
+    api
+      .getLogs(500)
+      .then((data) => {
+        setLines(data.lines ?? [])
+        setLastRefresh(new Date())
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Failed to load logs")
+      })
+      .finally(() => {
+        setLoading(false)
+        setRefreshing(false)
+      })
+  }, [])
+
+  // Initial load + auto-refresh every 30s
+  useEffect(() => {
+    refresh()
+    const interval = setInterval(refresh, 30000)
+    return () => clearInterval(interval)
+  }, [refresh])
+
+  // Updated ago ticker
+  useEffect(() => {
+    function tick() {
+      const diff = Date.now() - lastRefresh.getTime()
+      const secs = Math.floor(diff / 1000)
+      if (secs < 10) setUpdatedAgo("just now")
+      else if (secs < 60) setUpdatedAgo(`${secs}s ago`)
+      else setUpdatedAgo(`${Math.floor(secs / 60)}m ago`)
+    }
+    tick()
+    const interval = setInterval(tick, 10000)
+    return () => clearInterval(interval)
+  }, [lastRefresh])
+
+  // Parse lines for summary counts
+  const entries = lines.map(parseLogLine)
+  const totalCount = entries.length
+  const errorCount = entries.filter((e) => e.level === "error").length
+  const infoCount = entries.filter((e) => e.level === "info").length
+  const warnCount = entries.filter((e) => e.level === "warn").length
+
+  return (
+    <PageLayout>
+      <div
+        className="h-full flex flex-col overflow-hidden animate-fade-in"
+        style={{ background: "var(--bg)" }}
+      >
+        {/* Sticky header */}
+        <header
+          className="sticky top-0 z-10 flex-shrink-0"
+          style={{
+            background: "var(--material-regular)",
+            backdropFilter: "blur(40px) saturate(180%)",
+            WebkitBackdropFilter: "blur(40px) saturate(180%)",
+            borderBottom: "1px solid var(--separator)",
+          }}
+        >
+          <div
+            className="flex items-center justify-between"
+            style={{ padding: "var(--space-4) var(--space-6)" }}
+          >
+            <div>
+              <h1
+                style={{
+                  fontSize: "var(--text-title1)",
+                  fontWeight: "var(--weight-bold)",
+                  color: "var(--text-primary)",
+                  letterSpacing: "-0.5px",
+                  lineHeight: "var(--leading-tight)",
+                }}
+              >
+                Activity Console
+              </h1>
+              {!loading && (
+                <p
+                  style={{
+                    fontSize: "var(--text-footnote)",
+                    color: "var(--text-secondary)",
+                    marginTop: "var(--space-1)",
+                  }}
+                >
+                  {totalCount} event{totalCount !== 1 ? "s" : ""}
+                  {errorCount > 0 && (
+                    <span style={{ color: "var(--system-red)" }}>
+                      {" \u00b7 "}
+                      {errorCount} error{errorCount !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </p>
+              )}
+            </div>
+            <div
+              className="flex items-center"
+              style={{ gap: "var(--space-3)" }}
+            >
+              {/* Open Live Stream */}
+              <button
+                onClick={() =>
+                  window.dispatchEvent(new CustomEvent("open-live-stream"))
+                }
+                className="focus-ring flex items-center"
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: "var(--radius-sm)",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: "var(--text-footnote)",
+                  fontWeight: "var(--weight-semibold)",
+                  gap: 6,
+                  background: "var(--accent-fill)",
+                  color: "var(--accent)",
+                  transition: "all 200ms var(--ease-smooth)",
+                }}
+              >
+                <Radio size={14} />
+                Open Live Stream
+              </button>
+
+              <span
+                style={{
+                  fontSize: "var(--text-caption1)",
+                  color: "var(--text-tertiary)",
+                }}
+              >
+                Updated {updatedAgo}
+              </span>
+              <button
+                onClick={refresh}
+                className="focus-ring"
+                aria-label="Refresh logs"
+                style={{
+                  width: 32,
+                  height: 32,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: "var(--radius-sm)",
+                  border: "none",
+                  background: "transparent",
+                  color: "var(--text-tertiary)",
+                  cursor: "pointer",
+                  transition: "color 150ms var(--ease-smooth)",
+                }}
+              >
+                <RefreshCw
+                  size={16}
+                  className={refreshing ? "animate-spin" : ""}
+                />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {/* Scrollable content */}
+        <div
+          className="flex-1 overflow-y-auto flex flex-col"
+          style={{
+            padding: "var(--space-4) var(--space-6) var(--space-6)",
+            minHeight: 0,
+          }}
+        >
+          {/* Error banner */}
+          {error && (
+            <div
+              style={{
+                marginBottom: "var(--space-3)",
+                padding: "var(--space-3) var(--space-4)",
+                borderRadius: "var(--radius-md)",
+                background: "rgba(255,69,58,0.06)",
+                border: "1px solid rgba(255,69,58,0.15)",
+                fontSize: "var(--text-footnote)",
+                color: "var(--system-red)",
+              }}
+            >
+              Failed to load logs: {error}
+            </div>
+          )}
+
+          {loading ? (
+            <div
+              className="flex items-center justify-center"
+              style={{ height: 200, color: "var(--text-tertiary)" }}
+            >
+              Loading...
+            </div>
+          ) : (
+            <>
+              {/* Summary cards */}
+              <div
+                className="summary-cards-grid"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(4, 1fr)",
+                  gap: "var(--space-3)",
+                  marginBottom: "var(--space-4)",
+                }}
+              >
+                <SummaryCard label="Total Events" value={totalCount} />
+                <SummaryCard
+                  label="Errors"
+                  value={errorCount}
+                  color={
+                    errorCount > 0
+                      ? "var(--system-red)"
+                      : "var(--system-green)"
+                  }
+                  pulse
+                />
+                <SummaryCard
+                  label="Info"
+                  value={infoCount}
+                  color="var(--system-green)"
+                />
+                <SummaryCard
+                  label="Warnings"
+                  value={warnCount}
+                  color="var(--system-orange)"
+                />
+              </div>
+
+              {/* Log browser */}
+              <LogBrowser lines={lines} />
+            </>
+          )}
+        </div>
+
+        <style>{`
+          @media (max-width: 640px) {
+            .summary-cards-grid {
+              grid-template-columns: 1fr 1fr !important;
+            }
+          }
+        `}</style>
+      </div>
+    </PageLayout>
+  )
 }

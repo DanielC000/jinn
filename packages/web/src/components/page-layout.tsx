@@ -4,6 +4,7 @@ import { ThemeProvider } from "@/app/providers"
 import { SettingsProvider } from "@/app/settings-provider"
 import { Sidebar } from "./sidebar"
 import { GlobalSearch } from "./global-search"
+import { LiveStreamWidget } from "./live-stream-widget"
 
 export function PageLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -16,6 +17,7 @@ export function PageLayout({ children }: { children: React.ReactNode }) {
             <div className="md:hidden" style={{ height: 48 }} />
             {children}
           </main>
+          <LiveStreamWidget />
         </div>
       </SettingsProvider>
     </ThemeProvider>

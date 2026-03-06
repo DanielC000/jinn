@@ -65,8 +65,8 @@ export const api = {
   getConfig: () => get<Record<string, unknown>>("/api/config"),
   updateConfig: (data: Record<string, unknown>) =>
     put<Record<string, unknown>>("/api/config", data),
-  getLogs: (lines?: number) =>
-    get<Record<string, unknown>>(`/api/logs${lines ? `?lines=${lines}` : ""}`),
+  getLogs: (n?: number) =>
+    get<{ lines: string[] }>(`/api/logs${n ? `?n=${n}` : ""}`),
   getOnboarding: () =>
     get<{ needed: boolean; sessionsCount: number; hasEmployees: boolean }>("/api/onboarding"),
 };
