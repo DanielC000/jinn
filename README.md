@@ -122,6 +122,10 @@ pnpm dev
 | `pnpm lint`      | Lint all packages               |
 | `pnpm clean`     | Clean build artifacts           |
 
+## Acknowledgments
+
+The web dashboard UI is built on components from [ClawPort UI](https://github.com/JohnRiceML/clawport-ui) by John Rice, adapted for Jimmy's architecture. ClawPort provides the foundation for the theme system, shadcn components, org map, kanban board, cost dashboard, and activity console.
+
 ## License
 
 [MIT](LICENSE)
