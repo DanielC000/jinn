@@ -213,6 +213,7 @@ export async function handleApiRequest(
         sourceRef: `web:${Date.now()}`,
         employee: body.employee,
         title: body.title,
+        portalName: config.portal?.portalName,
       });
       insertMessage(session.id, "assistant", greeting);
       logger.info(`Stub session created: ${session.id}`);
@@ -233,6 +234,7 @@ export async function handleApiRequest(
         employee: body.employee,
         parentSessionId: body.parentSessionId,
         prompt,
+        portalName: config.portal?.portalName,
       });
       logger.info(`Web session created: ${session.id}`);
       insertMessage(session.id, "user", prompt);
@@ -480,18 +482,28 @@ export async function handleApiRequest(
         let description = "";
         if (fs.existsSync(skillMdPath)) {
           const content = fs.readFileSync(skillMdPath, "utf-8");
-          // Extract description from ## Trigger section or first paragraph after title
-          const triggerMatch = content.match(/##\s*Trigger\s*\n+([^\n#]+)/);
-          if (triggerMatch) {
-            description = triggerMatch[1].trim();
-          } else {
-            // Use first non-heading, non-empty line
-            const lines = content.split("\n");
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (trimmed && !trimmed.startsWith("#")) {
-                description = trimmed;
-                break;
+          // Extract description from YAML frontmatter, ## Trigger section, or first paragraph
+          const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+          if (frontmatterMatch) {
+            const descMatch = frontmatterMatch[1].match(/^description:\s*(.+)$/m);
+            if (descMatch) {
+              description = descMatch[1].trim();
+            }
+          }
+          if (!description) {
+            const triggerMatch = content.match(/##\s*Trigger\s*\n+([^\n#]+)/);
+            if (triggerMatch) {
+              description = triggerMatch[1].trim();
+            } else {
+              // Use first non-heading, non-empty, non-frontmatter line
+              const bodyContent = frontmatterMatch ? content.slice(frontmatterMatch[0].length) : content;
+              const lines = bodyContent.split("\n");
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed && !trimmed.startsWith("#")) {
+                  description = trimmed;
+                  break;
+                }
               }
             }
           }

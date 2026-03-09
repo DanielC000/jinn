@@ -87,20 +87,26 @@ export interface CreateSessionOpts {
   parentSessionId?: string;
 }
 
-function generateTitle(employee?: string, prompt?: string, portalName?: string): string {
-  const name = employee || portalName || 'Jinn';
-  if (!prompt) return name;
+function getNextSessionNumber(): number {
+  const db = initDb();
+  const row = db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number };
+  return row.count + 1;
+}
+
+function generateTitle(prompt?: string): string {
+  const num = getNextSessionNumber();
+  if (!prompt) return `#${num}`;
   const cleaned = prompt.replace(/\n/g, ' ').replace(/@\w+/g, '').replace(/\s+/g, ' ').trim();
-  if (!cleaned) return name;
+  if (!cleaned) return `#${num}`;
   const summary = cleaned.slice(0, 30).trim();
-  return `${name} - ${summary}${cleaned.length > 30 ? '...' : ''}`;
+  return `#${num} - ${summary}${cleaned.length > 30 ? '...' : ''}`;
 }
 
 export function createSession(opts: CreateSessionOpts & { prompt?: string; portalName?: string }): Session {
   const db = initDb();
   const now = new Date().toISOString();
   const id = uuidv4();
-  const title = opts.title ?? generateTitle(opts.employee, opts.prompt, opts.portalName);
+  const title = opts.title ?? generateTitle(opts.prompt);
 
   const stmt = db.prepare(`
     INSERT INTO sessions (id, engine, source, source_ref, employee, model, title, parent_session_id, status, created_at, last_activity)

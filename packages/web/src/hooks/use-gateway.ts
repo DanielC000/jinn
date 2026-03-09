@@ -30,6 +30,7 @@ export function useGateway() {
   const [events, setEvents] = useState<Array<{ event: string; payload: unknown }>>([]);
   const [connected, setConnected] = useState(false);
   const [connectionSeq, setConnectionSeq] = useState(0);
+  const [skillsVersion, setSkillsVersion] = useState(0);
   const permissionRequested = useRef(false);
   const portalNameRef = useRef(portalName);
   portalNameRef.current = portalName;
@@ -44,15 +45,20 @@ export function useGateway() {
     const socket = createGatewaySocket((event, payload) => {
       setEvents((prev) => [...prev.slice(-99), { event, payload }]);
 
+      // Refresh skills when skills directory changes
+      if (event === "skills:changed") {
+        setSkillsVersion((prev) => prev + 1);
+      }
+
       // Push notification when a session completes
       if (event === "session:completed") {
         const p = payload as Record<string, unknown>;
         const employee = (p.employee as string) || portalNameRef.current;
         const error = p.error as string | null;
         if (error) {
-          showNotification(`${employee} — Error`, error.slice(0, 100));
+          showNotification(`${employee} - Error`, error.slice(0, 100));
         } else {
-          showNotification(`${employee} — Done`, "Session completed successfully");
+          showNotification(`${employee} - Done`, "Session completed successfully");
         }
       }
     }, {
@@ -67,5 +73,5 @@ export function useGateway() {
     return () => socket.close();
   }, []);
 
-  return { events, connected, connectionSeq };
+  return { events, connected, connectionSeq, skillsVersion };
 }

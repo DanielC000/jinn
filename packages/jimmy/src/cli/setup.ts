@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 import { execSync, spawn } from "node:child_process";
 import yaml from "js-yaml";
 import {
@@ -40,6 +41,17 @@ function fail(msg: string) {
 
 function info(msg: string) {
   console.log(`  ${DIM}${msg}${RESET}`);
+}
+
+function prompt(question: string, defaultValue?: string): Promise<string> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const suffix = defaultValue ? ` ${DIM}(${defaultValue})${RESET}` : "";
+  return new Promise((resolve) => {
+    rl.question(`  ${question}${suffix}: `, (answer) => {
+      rl.close();
+      resolve(answer.trim() || defaultValue || "");
+    });
+  });
 }
 
 function whichBin(name: string): string | null {
@@ -311,7 +323,38 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     else warn("codex --version failed");
   }
 
-  // 5. Create ~/.jinn directory structure
+  // 5. Interactive setup (only when stdin is a TTY and config doesn't exist yet)
+  const isFreshSetup = !fs.existsSync(CONFIG_PATH);
+  const isInteractive = process.stdin.isTTY && isFreshSetup;
+
+  // Derive default COO name from instance name if set, otherwise "Jinn"
+  const instanceName = process.env.JINN_INSTANCE;
+  const defaultName = instanceName
+    ? instanceName.charAt(0).toUpperCase() + instanceName.slice(1)
+    : "Jinn";
+
+  let chosenName = defaultName;
+  let chosenEngine: "claude" | "codex" = "claude";
+
+  if (isInteractive) {
+    console.log("");
+    chosenName = await prompt("What should your AI assistant be called?", defaultName);
+
+    // Determine available engines
+    const engines: string[] = [];
+    if (claudePath) engines.push("claude");
+    if (codexPath) engines.push("codex");
+
+    if (engines.length === 2) {
+      const engineAnswer = await prompt("Preferred engine? (claude/codex)", "claude");
+      chosenEngine = engineAnswer === "codex" ? "codex" : "claude";
+    } else if (engines.length === 1) {
+      chosenEngine = engines[0] as "claude" | "codex";
+      ok(`Using ${chosenEngine} as default engine (only engine installed)`);
+    }
+  }
+
+  // 6. Create ~/.jinn directory structure
   console.log("");
   const created: string[] = [];
 
@@ -328,6 +371,11 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
       : DEFAULT_CONFIG;
     // Stamp the current package version into the config
     source = source.replace(/version:\s*"[^"]*"/, `version: "${getPackageVersion()}"`);
+    // Apply interactive choices
+    source = source.replace(/default:\s*claude/, `default: ${chosenEngine}`);
+    if (chosenName !== "Jinn") {
+      source = source.replace("portal: {}", `portal:\n  portalName: "${chosenName}"`);
+    }
     ensureFile(CONFIG_PATH, source);
     created.push(CONFIG_PATH);
   }

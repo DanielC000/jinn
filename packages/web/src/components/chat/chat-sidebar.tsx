@@ -141,6 +141,15 @@ export function ChatSidebar({
   const { settings } = useSettings()
   const portalName = settings.portalName ?? 'Jinn'
   const portalSlug = portalName.toLowerCase()
+
+  // Replace stale "Jinn" prefix in stored session titles with the current portal name
+  const fixTitle = (title: string | undefined, employee: string | undefined) => {
+    if (!title) return employee || portalName
+    if (portalName !== 'Jinn' && title.startsWith('Jinn - ')) {
+      return portalName + title.slice(4)
+    }
+    return title
+  }
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -522,7 +531,7 @@ export function ChatSidebar({
                             flex: 1,
                             minWidth: 0,
                           }}>
-                            {session.title || session.employee || portalName}
+                            {fixTitle(session.title, session.employee)}
                           </span>
                           <span style={{
                             fontSize: 'var(--text-caption2)',

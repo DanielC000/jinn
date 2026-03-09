@@ -7,10 +7,7 @@ description: Find and install skills from skills.sh when a capability gap is det
 
 ## Trigger
 
-This skill activates when:
-- You detect a capability gap that a community skill might fill
-- The user explicitly asks to find or install a skill
-- A task would benefit from a specialized skill you don't currently have
+This skill activates when you detect a capability gap that a community skill might fill, the user explicitly asks to find or install a skill and a task would benefit from a specialized skill you don't currently have
 
 ## Searching for Skills
 
@@ -70,12 +67,14 @@ Read the newly installed `~/.{{portalSlug}}/skills/<name>/SKILL.md` and follow i
 ## When No Skills Are Found
 
 If `npx skills find` returns no results:
+
 1. Offer to help the user directly with the task using your built-in capabilities
 2. Suggest creating a custom skill if this is a recurring need (use the `skill-creator` skill)
 
 ## Examples
 
 **User asks to deploy to Vercel:**
+
 ```bash
 npx skills find "vercel deploy"
 # → vercel-labs/ai-skills@vercel-deploy (🟢 VERIFIED, 5200 installs)
@@ -85,6 +84,7 @@ cp -r ~/.claude/skills/vercel-deploy/ ~/.{{portalSlug}}/skills/vercel-deploy/
 ```
 
 **User asks for an obscure skill:**
+
 ```bash
 npx skills find "arduino serial monitor"
 # → random-user/arduino-tools@serial-monitor (🔴 UNKNOWN, 12 installs)

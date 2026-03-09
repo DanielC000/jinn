@@ -13,10 +13,14 @@
     "setup:force": "pnpm build && node packages/jimmy/dist/bin/jimmy.js setup --force",
     "start": "pnpm clean && pnpm build && node packages/jimmy/dist/bin/jimmy.js start",
     "stop": "node packages/jimmy/dist/bin/jimmy.js stop",
+    "nuke": "node packages/jimmy/dist/bin/jimmy.js nuke",
     "status": "node packages/jimmy/dist/bin/jimmy.js status"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3", "classic-level"]
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "classic-level"
+    ]
   },
   "devDependencies": {
     "turbo": "^2.4.0",

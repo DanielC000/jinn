@@ -66,6 +66,7 @@ export class SessionManager {
         sourceRef,
         employee: employee?.name ?? undefined,
         model: employee?.model ?? undefined,
+        portalName: this.config.portal?.portalName,
       });
       logger.info(`Created new session ${session.id} for ${sourceRef}${employee ? ` (employee: ${employee.name})` : ""}`);
     }

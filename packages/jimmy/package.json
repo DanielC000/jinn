@@ -14,7 +14,7 @@
     "template/"
   ],
   "scripts": {
-    "build": "tsc && cp -r ../web/out dist/web 2>/dev/null || true",
+    "build": "tsc && rm -rf dist/web && cp -r ../web/out dist/web 2>/dev/null || true",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"

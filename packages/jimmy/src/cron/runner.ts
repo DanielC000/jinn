@@ -52,6 +52,7 @@ export async function runCronJob(
     model,
     title: job.name,
     prompt: job.prompt,
+    portalName: config.portal?.portalName,
   });
   insertMessage(session.id, "user", job.prompt);
 

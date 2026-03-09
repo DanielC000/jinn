@@ -82,6 +82,14 @@ program
   });
 
 program
+  .command("nuke [name]")
+  .description("Permanently delete a Jinn instance and all its data")
+  .action(async (name?: string) => {
+    const { runNuke } = await import("../src/cli/nuke.js");
+    await runNuke(name);
+  });
+
+program
   .command("migrate")
   .description("Apply pending template migrations to update this instance")
   .option("--check", "Only check for pending migrations, don't apply")

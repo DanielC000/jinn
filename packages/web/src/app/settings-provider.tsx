@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
   type JinnSettings,
   type EmployeeOverride,
@@ -10,6 +10,7 @@ import {
   hexToAccentFill,
   hexToContrastText,
 } from '@/lib/settings'
+import { api } from '@/lib/api'
 
 interface EmployeeDisplay {
   emoji: string
@@ -56,8 +57,28 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   // Hydrate from localStorage after mount to avoid hydration mismatch.
   const [settings, setSettings] = useState<JinnSettings>({ ...DEFAULTS })
 
+  // Hydrate from localStorage first, then always sync portalName/operatorName
+  // from backend config (source of truth). This ensures the correct COO name
+  // shows up even if localStorage has stale values from a previous onboarding.
   useEffect(() => {
-    setSettings(loadSettings())
+    const local = loadSettings()
+    setSettings(local)
+
+    api.getOnboarding()
+      .then((data) => {
+        if (data.portalName || data.operatorName) {
+          const merged = {
+            ...local,
+            ...(data.portalName && { portalName: data.portalName }),
+            ...(data.operatorName && { operatorName: data.operatorName }),
+          }
+          setSettings(merged)
+          saveSettings(merged)
+        }
+      })
+      .catch(() => {
+        // Best-effort — localStorage values are fine
+      })
   }, [])
 
   // Apply accent color CSS variables when settings change
@@ -217,3 +238,33 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 }
 
 export const useSettings = () => useContext(SettingsContext)
+
+/** Keeps document.title in sync with the portal name setting. */
+export function DocumentTitle() {
+  const { settings } = useSettings()
+  const nameRef = useRef(settings.portalName)
+  nameRef.current = settings.portalName
+
+  useEffect(() => {
+    function applyTitle() {
+      const name = nameRef.current || 'Jinn'
+      const desired = `${name} - AI Gateway`
+      if (document.title !== desired) {
+        document.title = desired
+      }
+    }
+
+    applyTitle()
+
+    // Next.js metadata system can override document.title after hydration.
+    // Watch for external changes and re-assert the correct title.
+    const titleEl = document.querySelector('title')
+    if (!titleEl) return
+
+    const observer = new MutationObserver(() => applyTitle())
+    observer.observe(titleEl, { childList: true, characterData: true, subtree: true })
+    return () => observer.disconnect()
+  }, [settings.portalName])
+
+  return null
+}

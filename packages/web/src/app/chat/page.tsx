@@ -55,7 +55,7 @@ function ChatPage() {
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
-  const { events, connectionSeq } = useGateway()
+  const { events, connectionSeq, skillsVersion } = useGateway()
   const searchParams = useSearchParams()
   const onboardingTriggered = useRef(false)
   // When set, the current session is a stub awaiting the user's first message
@@ -719,6 +719,7 @@ function ChatPage() {
             onSend={handleSend}
             onNewSession={handleNewChat}
             onStatusRequest={handleStatusRequest}
+            skillsVersion={skillsVersion}
           />
         </div>
       </div>

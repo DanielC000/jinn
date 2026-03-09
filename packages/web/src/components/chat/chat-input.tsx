@@ -21,8 +21,8 @@ interface SlashCommand {
   needsEmployee?: boolean
 }
 
-const SLASH_COMMANDS: SlashCommand[] = [
-  { name: 'sync', description: 'Pull in conversation from an employee', needsEmployee: true },
+/** Built-in commands handled client-side (not sent to engine) */
+const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: 'new', description: 'Start a new chat session' },
   { name: 'status', description: 'Show current session info' },
 ]
@@ -34,6 +34,8 @@ interface ChatInputProps {
   onInterrupt?: () => void
   onNewSession: () => void
   onStatusRequest: () => void
+  /** Incremented when skills change on the gateway, triggers re-fetch */
+  skillsVersion?: number
 }
 
 /* ── File to MediaAttachment ─────────────────────────────── */
@@ -99,12 +101,14 @@ export function ChatInput({
   onInterrupt,
   onNewSession,
   onStatusRequest,
+  skillsVersion,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [employees, setEmployees] = useState<Employee[]>([])
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
   const [mentionIndex, setMentionIndex] = useState(0)
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>(BUILTIN_COMMANDS)
   const [showCommands, setShowCommands] = useState(false)
   const [commandFilter, setCommandFilter] = useState('')
   const [commandIndex, setCommandIndex] = useState(0)
@@ -138,6 +142,23 @@ export function ChatInput({
       })
       .catch(() => {})
   }, [])
+
+  // Load skills as slash commands (re-fetches when skills change on gateway)
+  useEffect(() => {
+    api.getSkills()
+      .then((skills) => {
+        if (!Array.isArray(skills)) return
+        const skillCommands: SlashCommand[] = skills
+          .filter((s) => !BUILTIN_COMMANDS.some((b) => b.name === s.name))
+          .map((s) => ({
+            name: s.name as string,
+            description: (s.description as string) || '',
+            needsEmployee: s.name === 'sync',
+          }))
+        setSlashCommands([...BUILTIN_COMMANDS, ...skillCommands])
+      })
+      .catch(() => {})
+  }, [skillsVersion])
 
   // Cleanup recorder on unmount
   useEffect(() => {
@@ -369,7 +390,7 @@ export function ChatInput({
     }
   }
 
-  const filteredCommands = SLASH_COMMANDS.filter((c) =>
+  const filteredCommands = slashCommands.filter((c) =>
     c.name.toLowerCase().startsWith(commandFilter)
   )
 
@@ -400,7 +421,7 @@ export function ChatInput({
           border: '1px solid var(--separator)',
           borderRadius: 'var(--radius-md)',
           boxShadow: 'var(--shadow-lg)',
-          maxHeight: 160,
+          maxHeight: 240,
           overflowY: 'auto',
           zIndex: 10,
         }}>
@@ -409,6 +430,9 @@ export function ChatInput({
             return (
               <button
                 key={cmd.name}
+                ref={(el) => {
+                  if (isHighlighted && el) el.scrollIntoView({ block: 'nearest' })
+                }}
                 onClick={() => handleCommandSelect(cmd)}
                 style={{
                   width: '100%',

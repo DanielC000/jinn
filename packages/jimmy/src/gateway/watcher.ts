@@ -8,6 +8,7 @@ export interface WatcherCallbacks {
   onConfigReload: () => void;
   onCronReload: () => void;
   onOrgChange: () => void;
+  onSkillsChange: () => void;
 }
 
 let watchers: FSWatcher[] = [];
@@ -117,6 +118,7 @@ export function startWatchers(callbacks: WatcherCallbacks): void {
     debounce(() => {
       logger.info("skills/ directory changed, syncing symlinks...");
       syncSkillSymlinks();
+      callbacks.onSkillsChange();
     }, DEBOUNCE_MS),
   );
 

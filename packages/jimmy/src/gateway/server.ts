@@ -281,6 +281,10 @@ export async function startGateway(
       logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
       emit("org:changed", {});
     },
+    onSkillsChange: () => {
+      logger.info("Skills changed, notifying clients");
+      emit("skills:changed", {});
+    },
   });
 
   // Start listening

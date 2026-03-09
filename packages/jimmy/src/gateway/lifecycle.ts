@@ -1,4 +1,4 @@
-import { fork } from "node:child_process";
+import { execSync, fork } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +6,7 @@ import { PID_FILE, JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import type { JinnConfig } from "../shared/types.js";
 import { startGateway } from "./server.js";
+import { loadConfig } from "../shared/config.js";
 
 export async function startForeground(config: JinnConfig): Promise<void> {
   const cleanup = await startGateway(config);
@@ -107,7 +108,6 @@ export function stop(port?: number): boolean {
 
 function resolvePort(): number {
   try {
-    const { loadConfig } = require("../shared/config.js");
     const config = loadConfig();
     return config.gateway?.port || 7777;
   } catch {
@@ -117,7 +117,6 @@ function resolvePort(): number {
 
 function findPidOnPort(port: number): number | null {
   try {
-    const { execSync } = require("node:child_process");
     const output = execSync(`lsof -ti tcp:${port}`, { encoding: "utf-8" }).trim();
     if (!output) return null;
     // Could be multiple lines — take the first PID
