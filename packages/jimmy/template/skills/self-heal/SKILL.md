@@ -15,7 +15,7 @@ Work through these checks in order. Stop and fix issues as you find them.
 
 ### 1. Check Gateway Logs
 
-Read `~/.jimmy/logs/gateway.log` and look for:
+Read `~/.jinn/logs/gateway.log` and look for:
 - Error messages or stack traces
 - Repeated failures or crash loops
 - Connection refused or timeout errors
@@ -26,7 +26,7 @@ Summarize any problems found to the user.
 
 ### 2. Validate Configuration
 
-Read `~/.jimmy/config.yaml` and verify:
+Read `~/.jinn/config.yaml` and verify:
 - The file is valid YAML (no syntax errors)
 - The `port` field is a valid number (typically 3777)
 - Required fields are present: `port`, `engine`, `model`
@@ -44,13 +44,13 @@ If the engine command is not found, inform the user that the engine is not insta
 ### 4. Check Session Database
 
 Look at the session registry for stuck sessions:
-- Read `~/.jimmy/sessions.db` or the session storage
+- Read `~/.jinn/sessions.db` or the session storage
 - Look for sessions with status `running` that have not been updated recently (more than 30 minutes old)
 - These may be stuck and need to be reset
 
 ### 5. Check Disk and Temp Files
 
-- Check if `~/.jimmy/tmp/` contains stale files that should be cleaned up
+- Check if `~/.jinn/tmp/` contains stale files that should be cleaned up
 - Large or numerous temp files can cause issues
 
 ## Common Fixes
@@ -61,14 +61,14 @@ If the gateway appears to be in a bad state (crash loops, unresponsive, port con
 
 Tell the user to run:
 ```bash
-jimmy stop && jimmy start
+jinn stop && jinn start
 ```
 
 ### Clear Temp Directory
 
 If temp files are stale or causing issues:
 
-Delete all contents of `~/.jimmy/tmp/` but keep the directory itself.
+Delete all contents of `~/.jinn/tmp/` but keep the directory itself.
 
 ### Fix Malformed JSON
 
@@ -104,7 +104,7 @@ If the gateway cannot bind to its configured port:
 
 ## Reference
 
-For understanding {{portalName}}'s architecture and component relationships, refer to the documentation in `~/.jimmy/docs/` if available.
+For understanding {{portalName}}'s architecture and component relationships, refer to the documentation in `~/.jinn/docs/` if available.
 
 ## Error Handling
 

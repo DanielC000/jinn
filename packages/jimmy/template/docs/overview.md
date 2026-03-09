@@ -1,6 +1,6 @@
 # {{portalName}} Overview
 
-{{portalName}} is a lightweight AI gateway daemon that wraps professional AI CLI tools as "engines." It is published as `@jimmy-ai/cli`.
+{{portalName}} is a lightweight AI gateway daemon that wraps professional AI CLI tools as "engines." It is published as `jinn-cli`.
 
 ## Core Principle
 
@@ -22,9 +22,9 @@ Traditional approaches build custom tool-calling loops, manage context windows, 
 ## Directory Structure
 
 ```
-~/.jimmy/
+~/.jinn/
   config.yaml          # Gateway configuration
-  jimmy.db             # SQLite session registry
+  jinn.db             # SQLite session registry
   docs/                # These reference docs
   skills/              # Skill directories with SKILL.md files
   cron/

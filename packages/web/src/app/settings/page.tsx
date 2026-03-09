@@ -576,7 +576,7 @@ export default function SettingsPage() {
                 <input
                   type="text"
                   className="apple-input"
-                  placeholder="Jimmy"
+                  placeholder="Jinn"
                   value={nameValue}
                   onChange={(e) => setNameValue(e.target.value)}
                   onBlur={() => {
@@ -1137,7 +1137,7 @@ export default function SettingsPage() {
             >
               <button
                 onClick={() => {
-                  localStorage.removeItem("jimmy-onboarded")
+                  localStorage.removeItem("jinn-onboarded")
                   window.location.reload()
                 }}
                 style={{
@@ -1163,8 +1163,8 @@ export default function SettingsPage() {
                   if (
                     window.confirm("Reset all settings to defaults?")
                   ) {
-                    localStorage.removeItem("jimmy-settings")
-                    localStorage.removeItem("jimmy-theme")
+                    localStorage.removeItem("jinn-settings")
+                    localStorage.removeItem("jinn-theme")
                     resetAll()
                     window.location.reload()
                   }

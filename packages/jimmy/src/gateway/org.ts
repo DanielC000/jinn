@@ -70,7 +70,7 @@ export function extractMention(
 }
 
 /**
- * Extract ALL mentioned employees from text (e.g. "@jimmy-dev @jimmy-qa do X").
+ * Extract ALL mentioned employees from text (e.g. "@jinn-dev @jinn-qa do X").
  * Returns an array of matched employees (can be empty).
  */
 export function extractMentions(

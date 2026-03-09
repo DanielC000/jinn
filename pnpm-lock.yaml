@@ -17,7 +17,7 @@ importers:
 
   packages/jimmy:
     dependencies:
-      '@jimmy-ai/web':
+      '@jinn/web':
         specifier: workspace:*
         version: link:../web
       '@slack/bolt':

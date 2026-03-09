@@ -4,7 +4,7 @@ Skills are markdown instruction sets that engines read and follow. There is no r
 
 ## How Skills Work
 
-Each skill is a directory in `~/.jimmy/skills/` containing at minimum a `SKILL.md` file. When an engine starts a session, it has access to the skills directory and can read any skill's instructions.
+Each skill is a directory in `~/.jinn/skills/` containing at minimum a `SKILL.md` file. When an engine starts a session, it has access to the skills directory and can read any skill's instructions.
 
 The `SKILL.md` file contains:
 - **Trigger description**: When this skill should be activated
@@ -14,7 +14,7 @@ The `SKILL.md` file contains:
 ## Creating a Skill
 
 ```
-~/.jimmy/skills/
+~/.jinn/skills/
   my-skill/
     SKILL.md          # Required: instructions
     data.json         # Optional: supporting data

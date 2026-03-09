@@ -3,7 +3,7 @@ import type {
   Connector,
   IncomingMessage,
   Session,
-  JimmyConfig,
+  JinnConfig,
   Employee,
   Target,
 } from "../shared/types.js";
@@ -16,17 +16,17 @@ import {
 } from "./registry.js";
 import { buildContext } from "./context.js";
 import { SessionQueue } from "./queue.js";
-import { JIMMY_HOME } from "../shared/paths.js";
+import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 
 export class SessionManager {
-  private config: JimmyConfig;
+  private config: JinnConfig;
   private engines: Map<string, Engine>;
   private connectorNames: string[];
   private queue = new SessionQueue();
 
   constructor(
-    config: JimmyConfig,
+    config: JinnConfig,
     engines: Map<string, Engine>,
     connectorNames: string[] = [],
   ) {
@@ -146,7 +146,7 @@ export class SessionManager {
         prompt,
         resumeSessionId: session.engineSessionId ?? undefined,
         systemPrompt,
-        cwd: JIMMY_HOME,
+        cwd: JINN_HOME,
         bin: engineConfig.bin,
         model: session.model ?? engineConfig.model,
         effortLevel: (engineConfig as { effortLevel?: string }).effortLevel,

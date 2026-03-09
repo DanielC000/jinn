@@ -17,7 +17,7 @@ You fetch the conversation yourself using the gateway API. No magic injection �
 
 ### Steps
 
-1. **Extract the employee name** from the user's message (e.g., `/sync @jimmy-dev` → `jimmy-dev`)
+1. **Extract the employee name** from the user's message (e.g., `/sync @jinn-dev` → `jinn-dev`)
 
 2. **List all sessions** to find the employee's most recent one:
 
@@ -60,8 +60,8 @@ After fetching and reading the conversation:
 
 ## Examples
 
-User: `/sync @jimmy-dev`
-You: *[fetches sessions via API, finds jimmy-dev's latest session, reads messages]* "Here's what happened in the latest conversation with @jimmy-dev: [summary]. Want me to follow up on anything?"
+User: `/sync @jinn-dev`
+You: *[fetches sessions via API, finds jinn-dev's latest session, reads messages]* "Here's what happened in the latest conversation with @jinn-dev: [summary]. Want me to follow up on anything?"
 
 User: `/sync @content-writer`
 You: *[fetches via API]* "Looking at the recent chat with @content-writer — they finished the blog draft and are waiting for review. Should I ask them to make revisions, or is it ready to publish?"

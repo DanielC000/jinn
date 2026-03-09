@@ -4,7 +4,7 @@
 
 ## Employee Personas
 
-Employee files live at `~/.jimmy/org/<department>/<name>.yaml`.
+Employee files live at `~/.jinn/org/<department>/<name>.yaml`.
 
 ```yaml
 name: alice
@@ -33,10 +33,10 @@ persona: |
 
 ## Departments
 
-Each department is a directory under `~/.jimmy/org/` containing:
+Each department is a directory under `~/.jinn/org/` containing:
 
 ```
-~/.jimmy/org/engineering/
+~/.jinn/org/engineering/
   department.yaml     # Department metadata
   board.json          # Shared task board
   alice.yaml          # Employee persona

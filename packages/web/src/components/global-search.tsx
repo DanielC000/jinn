@@ -77,7 +77,7 @@ function fuzzyMatch(query: string, target: string): boolean {
 
 export function GlobalSearch() {
   const { settings } = useSettings()
-  const portalName = settings.portalName ?? "Jimmy"
+  const portalName = settings.portalName ?? "Jinn"
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [activeIndex, setActiveIndex] = useState(0)

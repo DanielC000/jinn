@@ -2,7 +2,7 @@ import type { IncomingMessage as HttpRequest, ServerResponse } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import type { Engine, JimmyConfig, Session } from "../shared/types.js";
+import type { Engine, JinnConfig, Session } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
@@ -24,13 +24,13 @@ import {
   LOGS_DIR,
 } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
-import { JIMMY_HOME } from "../shared/paths.js";
+import { JINN_HOME } from "../shared/paths.js";
 
 export interface ApiContext {
-  config: JimmyConfig;
+  config: JinnConfig;
   sessionManager: SessionManager;
   startTime: number;
-  getConfig: () => JimmyConfig;
+  getConfig: () => JinnConfig;
   emit: (event: string, payload: unknown) => void;
   connectors: Map<string, import("../shared/types.js").Connector>;
 }
@@ -39,7 +39,7 @@ function dispatchWebSessionRun(
   session: Session,
   prompt: string,
   engine: Engine,
-  config: JimmyConfig,
+  config: JinnConfig,
   context: ApiContext,
   opts?: { delayMs?: number },
 ): void {
@@ -538,13 +538,13 @@ export async function handleApiRequest(
       fs.writeFileSync(CONFIG_PATH, yamlStr);
       logger.info(`Onboarding: portal name="${portalName}", operator="${operatorName}", language="${language}"`);
 
-      const effectiveName = portalName || "Jimmy";
+      const effectiveName = portalName || "Jinn";
       const languageSection = language && language !== "English"
         ? `\n\n## Language\nAlways respond in ${language}. All communication with the user must be in ${language}.`
         : "";
 
       // Update CLAUDE.md with personalized COO name and language
-      const claudeMdPath = path.join(JIMMY_HOME, "CLAUDE.md");
+      const claudeMdPath = path.join(JINN_HOME, "CLAUDE.md");
       if (fs.existsSync(claudeMdPath)) {
         let claudeMd = fs.readFileSync(claudeMdPath, "utf-8");
         // Replace the identity line in CLAUDE.md
@@ -561,10 +561,10 @@ export async function handleApiRequest(
       }
 
       // Update AGENTS.md with personalized name and language
-      const agentsMdPath = path.join(JIMMY_HOME, "AGENTS.md");
+      const agentsMdPath = path.join(JINN_HOME, "AGENTS.md");
       if (fs.existsSync(agentsMdPath)) {
         let agentsMd = fs.readFileSync(agentsMdPath, "utf-8");
-        // Replace the bold identity line (e.g. "You are **Jimmy**")
+        // Replace the bold identity line (e.g. "You are **Jinn**")
         agentsMd = agentsMd.replace(
           /You are \*\*\w+\*\*/,
           `You are **${effectiveName}**`,
@@ -642,7 +642,7 @@ async function runWebSession(
   session: Session,
   prompt: string,
   engine: Engine,
-  config: JimmyConfig,
+  config: JinnConfig,
   context: ApiContext,
 ): Promise<void> {
   const currentSession = getSession(session.id);
@@ -696,7 +696,7 @@ async function runWebSession(
       prompt,
       resumeSessionId: currentSession.engineSessionId ?? undefined,
       systemPrompt,
-      cwd: JIMMY_HOME,
+      cwd: JINN_HOME,
       bin: engineConfig.bin,
       model: currentSession.model ?? engineConfig.model,
       cliFlags: employee?.cliFlags,
@@ -744,7 +744,7 @@ async function runWebSession(
 
     context.emit("session:completed", {
       sessionId: currentSession.id,
-      employee: currentSession.employee || config.portal?.portalName || "Jimmy",
+      employee: currentSession.employee || config.portal?.portalName || "Jinn",
       title: currentSession.title,
       result: result.result,
       error: result.error || null,

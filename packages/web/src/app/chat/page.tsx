@@ -37,7 +37,7 @@ export default function ChatPageWrapper() {
 
 function ChatPage() {
   const { settings } = useSettings()
-  const portalName = settings.portalName ?? 'Jimmy'
+  const portalName = settings.portalName ?? 'Jinn'
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)

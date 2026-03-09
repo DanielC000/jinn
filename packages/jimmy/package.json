@@ -1,11 +1,11 @@
 {
-  "name": "@jimmy-ai/cli",
+  "name": "jinn-cli",
   "version": "0.1.0",
   "description": "Lightweight AI gateway daemon orchestrating Claude Code and Codex",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "jimmy": "./dist/bin/jimmy.js"
+    "jinn": "./dist/bin/jimmy.js"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -20,7 +20,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@jimmy-ai/web": "workspace:*",
+    "@jinn/web": "workspace:*",
     "@slack/bolt": "^4.3.0",
     "better-sqlite3": "^11.8.0",
     "chokidar": "^4.0.0",

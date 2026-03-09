@@ -1,7 +1,7 @@
-import type { CronJob, Engine, JimmyConfig, Connector } from "../shared/types.js";
+import type { CronJob, Engine, JinnConfig, Connector } from "../shared/types.js";
 import { buildContext } from "../sessions/context.js";
 import { createSession, updateSession, insertMessage } from "../sessions/registry.js";
-import { JIMMY_HOME } from "../shared/paths.js";
+import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { appendRunLog } from "./jobs.js";
 import { scanOrg, findEmployee } from "../gateway/org.js";
@@ -9,7 +9,7 @@ import { scanOrg, findEmployee } from "../gateway/org.js";
 export async function runCronJob(
   job: CronJob,
   engines: Map<string, Engine>,
-  config: JimmyConfig,
+  config: JinnConfig,
   connectors: Map<string, Connector>,
 ): Promise<void> {
   const startTime = Date.now();
@@ -27,7 +27,7 @@ export async function runCronJob(
 
   // 2. Warn if a non-COO employee has delivery configured (anti-pattern)
   const delivery = job.delivery || config.cron?.defaultDelivery;
-  const cooSlug = config.portal?.portalName?.toLowerCase() || "jimmy";
+  const cooSlug = config.portal?.portalName?.toLowerCase() || "jinn";
   if (delivery && job.employee && job.employee !== cooSlug) {
     logger.warn(
       `Cron job "${job.name}" targets employee "${job.employee}" with delivery to ${delivery.connector}:${delivery.channel}. ` +
@@ -76,7 +76,7 @@ export async function runCronJob(
     const result = await engine.run({
       prompt: job.prompt,
       systemPrompt: ctx,
-      cwd: JIMMY_HOME,
+      cwd: JINN_HOME,
       model,
     });
 

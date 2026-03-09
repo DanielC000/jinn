@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import {
-  type JimmySettings,
+  type JinnSettings,
   type EmployeeOverride,
   DEFAULTS,
   loadSettings,
@@ -18,7 +18,7 @@ interface EmployeeDisplay {
 }
 
 interface SettingsContextValue {
-  settings: JimmySettings
+  settings: JinnSettings
   setAccentColor: (color: string | null) => void
   setPortalName: (name: string | null) => void
   setPortalSubtitle: (subtitle: string | null) => void
@@ -54,7 +54,7 @@ const SettingsContext = createContext<SettingsContextValue>({
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   // Initialize with defaults so server and client render the same HTML.
   // Hydrate from localStorage after mount to avoid hydration mismatch.
-  const [settings, setSettings] = useState<JimmySettings>({ ...DEFAULTS })
+  const [settings, setSettings] = useState<JinnSettings>({ ...DEFAULTS })
 
   useEffect(() => {
     setSettings(loadSettings())
@@ -74,7 +74,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     }
   }, [settings.accentColor])
 
-  const update = useCallback((next: JimmySettings) => {
+  const update = useCallback((next: JinnSettings) => {
     setSettings(next)
     saveSettings(next)
   }, [])
@@ -177,7 +177,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   )
 
   const resetAll = useCallback(() => {
-    const defaults: JimmySettings = {
+    const defaults: JinnSettings = {
       accentColor: null,
       portalName: null,
       portalSubtitle: null,

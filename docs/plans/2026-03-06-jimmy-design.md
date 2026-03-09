@@ -1,26 +1,26 @@
-# Jimmy Design Document
+# Jinn Design Document
 
 **Date:** 2026-03-06
 **Status:** Approved
-**Package:** `@jimmy-ai/cli`
+**Package:** `jinn-cli`
 
 ---
 
 ## 1. Overview
 
-Jimmy is a lightweight, open-source AI gateway daemon that orchestrates Claude Code CLI and Codex SDK to create an autonomous, self-organizing AI workforce.
+Jinn is a lightweight, open-source AI gateway daemon that orchestrates Claude Code CLI and Codex SDK to create an autonomous, self-organizing AI workforce.
 
 ### Core Principles
 
-1. **Zero opinions on AI** — Jimmy never touches the agentic loop. No ReAct implementation, no tool execution, no context management, no memory system. Claude Code and Codex handle all intelligence. Jimmy is a bus, not a brain.
+1. **Zero opinions on AI** — Jinn never touches the agentic loop. No ReAct implementation, no tool execution, no context management, no memory system. Claude Code and Codex handle all intelligence. Jinn is a bus, not a brain.
 
 2. **Files are the interface** — Everything is files on disk. Employees are persona YAML files. Boards are JSON files. Skills are directories with SKILL.md. Config is YAML. The engines read and write these files natively. The gateway watches for changes and reacts.
 
-3. **Organic growth** — No predefined structure. Jimmy bootstraps an organization based on the user's actual needs. Departments, employees, ranks, boards — all created on demand by Jimmy's management skill, not hardcoded.
+3. **Organic growth** — No predefined structure. Jinn bootstraps an organization based on the user's actual needs. Departments, employees, ranks, boards — all created on demand by Jinn's management skill, not hardcoded.
 
 ### Mental Model
 
-You are the CEO. Jimmy is your COO. He hires, manages, and orchestrates a team of AI employees — each backed by Claude Code or Codex — to handle your work across projects, platforms, and domains.
+You are the CEO. Jinn is your COO. He hires, manages, and orchestrates a team of AI employees — each backed by Claude Code or Codex — to handle your work across projects, platforms, and domains.
 
 ### Tech Stack
 
@@ -30,7 +30,7 @@ You are the CEO. Jimmy is your COO. He hires, manages, and orchestrates a team o
 - **Database:** SQLite (better-sqlite3) for session registry
 - **Slack:** Bolt SDK (socket mode)
 - **Cron:** node-cron
-- **Package:** `@jimmy-ai/cli` on npm
+- **Package:** `jinn-cli` on npm
 
 ---
 
@@ -40,13 +40,13 @@ You are the CEO. Jimmy is your COO. He hires, manages, and orchestrates a team o
 
 | Component | Package | Purpose |
 |-----------|---------|---------|
-| Core | `@jimmy-ai/cli` | CLI + gateway daemon + engines + connectors + cron |
-| Web UI | `@jimmy-ai/web` | Next.js + Tailwind dashboard, statically exported |
-| Template | `template/` | Init files copied to `~/.jimmy/` on setup |
+| Core | `jinn-cli` | CLI + gateway daemon + engines + connectors + cron |
+| Web UI | `@jinn/web` | Next.js + Tailwind dashboard, statically exported |
+| Template | `template/` | Init files copied to `~/.jinn/` on setup |
 
 ### Single Process Runtime
 
-`jimmy start` boots one Node.js process that runs:
+`jinn start` boots one Node.js process that runs:
 - HTTP server (REST API + static web UI files)
 - WebSocket server (live events to web UI)
 - Connector system (Slack etc. via socket mode)
@@ -64,13 +64,13 @@ Incoming message (Slack / Web UI / Cron tick)
 Connector normalizes -> { source, channel, thread, user, text, attachments }
     |
     v
-Gateway checks: is this a Jimmy command (/new, /status)?
+Gateway checks: is this a Jinn command (/new, /status)?
     | YES -> handle internally, respond
     | NO  v
     |
 Router: who is this for?
     | @employee-name mentioned? -> look up employee persona
-    | No mention? -> use channel/DM session (Jimmy or last active persona)
+    | No mention? -> use channel/DM session (Jinn or last active persona)
     |
     v
 Session Manager
@@ -79,7 +79,7 @@ Session Manager
     | 3. Download attachments to temp dir (if any)
     | 4. Build --append-system-prompt (session origin context)
     | 5. Add eyes reaction via connector
-    | 6. Spawn engine process (one-shot, cwd: ~/.jimmy/)
+    | 6. Spawn engine process (one-shot, cwd: ~/.jinn/)
     |
     v
 Engine runs (Claude Code / Codex does everything)
@@ -110,7 +110,7 @@ Default: `7777`. Configurable in `config.yaml`.
 
 | Type | Trigger | Lifecycle | Resume behavior |
 |------|---------|-----------|-----------------|
-| Main | DM to Jimmy on Slack | Persistent forever | Same session_id resumed on every DM |
+| Main | DM to Jinn on Slack | Persistent forever | Same session_id resumed on every DM |
 | Channel | Message in Slack channel root | Persistent per channel | Same session_id resumed for all root messages |
 | Thread | Reply creating a Slack thread | Isolated per thread | Same session_id for all messages within thread |
 | Cron | Cron job fires | Isolated per run | Fresh session every time, never resumed |
@@ -138,7 +138,7 @@ CREATE TABLE sessions (
 - **One engine per session, fixed at creation.** No mid-conversation engine switching.
 - **One-shot resume model.** Every interaction spawns `claude -p --resume <id> --output-format json "message"`. Process runs, returns JSON, exits.
 - **Lane queue.** One engine process per session at a time. New messages queue until the current process finishes.
-- **`/new` command.** User types `/new` in any context -> Jimmy creates a new session ID, stops resuming the old one. Old session remains in engine's native storage but Jimmy no longer references it.
+- **`/new` command.** User types `/new` in any context -> Jinn creates a new session ID, stops resuming the old one. Old session remains in engine's native storage but Jinn no longer references it.
 - **`/status` command.** Returns active sessions, cron jobs, gateway health.
 
 ---
@@ -186,7 +186,7 @@ claude -p \
   "<prompt>"
 ```
 
-- `cwd: ~/.jimmy/`
+- `cwd: ~/.jinn/`
 - Parses JSON stdout: `{ session_id, result, total_cost_usd, duration_ms, num_turns }`
 - Attachments included in prompt as file paths (Claude Code reads files/images natively)
 - **Must unset `CLAUDECODE` env var** to prevent false "nested session" detection:
@@ -204,13 +204,13 @@ import { Codex } from "@openai/codex-sdk";
 const codex = new Codex();
 const thread = resumeId
   ? codex.resumeThread(resumeId)
-  : codex.startThread({ workingDirectory: "~/.jimmy/" });
+  : codex.startThread({ workingDirectory: "~/.jinn/" });
 const result = await thread.run(prompt);
 ```
 
 ### Adding New Engines
 
-One new file implementing the `Engine` interface. The gateway is engine-agnostic. Any engine can be Jimmy's default brain — configurable in `config.yaml`.
+One new file implementing the `Engine` interface. The gateway is engine-agnostic. Any engine can be Jinn's default brain — configurable in `config.yaml`.
 
 ### Available Models
 
@@ -284,7 +284,7 @@ interface Target {
 Built on Bolt SDK in socket mode:
 - Thread detection: `event.thread_ts` exists -> thread session, else -> channel/DM session
 - Reactions: eyes on processing, checkmark on success, X on error
-- Attachments: downloaded from Slack URL to `~/.jimmy/tmp/`
+- Attachments: downloaded from Slack URL to `~/.jinn/tmp/`
 - Message editing supported (for streaming or corrections)
 
 ### Thread Mapping
@@ -297,9 +297,9 @@ Thread reply          -> source_ref = "slack:<channelId>:<threadTs>"    -> Threa
 
 ### Employee Mention Detection
 
-Before routing, scan message text for `@employee-name` patterns. Match against `~/.jimmy/org/` employee registry (loaded by gateway, refreshed by file watcher). If matched, spawn session with that employee's persona. If not matched, use default (Jimmy).
+Before routing, scan message text for `@employee-name` patterns. Match against `~/.jinn/org/` employee registry (loaded by gateway, refreshed by file watcher). If matched, spawn session with that employee's persona. If not matched, use default (Jinn).
 
-### Jimmy Commands
+### Jinn Commands
 
 Connector intercepts `/new` and `/status` before routing to session manager. Handled internally, no engine session needed.
 
@@ -311,7 +311,7 @@ Discord, iMessage, etc. implement the same `Connector` interface. The gateway wo
 
 ## 6. Cron System
 
-### Job Definition (`~/.jimmy/cron/jobs.json`)
+### Job Definition (`~/.jinn/cron/jobs.json`)
 
 ```json
 [
@@ -344,7 +344,7 @@ Discord, iMessage, etc. implement the same `Connector` interface. The gateway wo
 | `timezone` | no | IANA timezone (default: system) |
 | `engine` | no | Override engine (default: global) |
 | `model` | no | Override model |
-| `employee` | no | Employee persona (null = Jimmy) |
+| `employee` | no | Employee persona (null = Jinn) |
 | `prompt` | yes | Message sent to engine |
 | `delivery` | no | Where to post results |
 
@@ -355,7 +355,7 @@ Discord, iMessage, etc. implement the same `Connector` interface. The gateway wo
 3. Spawns engine with employee persona (if set)
 4. Engine runs, returns result
 5. If delivery configured, posts result to connector channel
-6. Logs run to `~/.jimmy/cron/runs/<jobId>.jsonl`
+6. Logs run to `~/.jinn/cron/runs/<jobId>.jsonl`
 7. If error: logs error, posts error with X reaction to delivery channel
 
 ### No retry. Hot-reload via file watcher.
@@ -366,11 +366,11 @@ The `cron-manager` skill instructs the engine to ask the user about delivery cha
 
 ## 7. Organization System
 
-### Directory Structure (Created by Jimmy on Demand)
+### Directory Structure (Created by Jinn on Demand)
 
 ```
-~/.jimmy/org/
-  jimmy.yaml
+~/.jinn/org/
+  jinn.yaml
   departments/
     marketing/
       department.yaml
@@ -398,10 +398,10 @@ rank: senior
 engine: claude
 model: opus
 hired: "2026-03-06"
-hiredBy: jimmy
+hiredBy: jinn
 
 persona: |
-  You are Sarah, the SEO Specialist at Jimmy's organization.
+  You are Sarah, the SEO Specialist at Jinn's organization.
   You specialize in keyword research, blog content strategy,
   and App Store Optimization for iOS apps.
 
@@ -409,7 +409,7 @@ persona: |
   - Homy (security camera app) - ~/Projects/Homy-Landing/
   - SQLNoir (SQL learning game) - ~/Projects/SQLNoir/
 
-  You report to: jimmy
+  You report to: jinn
   You can: create tasks on other department boards (senior privilege)
 
 knowledge:
@@ -436,7 +436,7 @@ purpose: "Content creation, SEO, ASO, social media, community engagement"
     "assignee": "seo-specialist",
     "status": "in_progress",
     "priority": "high",
-    "createdBy": "jimmy",
+    "createdBy": "jinn",
     "createdAt": "2026-03-06T10:00:00Z",
     "updatedAt": "2026-03-06T14:30:00Z",
     "notes": "Focus on privacy angle."
@@ -448,16 +448,16 @@ purpose: "Content creation, SEO, ASO, social media, community engagement"
 
 | Rank | Comms Privileges | Org Privileges |
 |------|-----------------|----------------|
-| Executive (Jimmy) | Talk to anyone, anywhere | Hire/fire, create departments, promote, full org control |
+| Executive (Jinn) | Talk to anyone, anywhere | Hire/fire, create departments, promote, full org control |
 | Manager | Delegate to department, spawn sessions for reports | Review output, reassign tasks within department |
 | Senior | Write to other department boards, cross-team requests | Suggest hires, flag issues |
 | Employee | Write to own board only, requests go up | Work on assigned tasks |
 
-Enforcement is via persona instructions (honor system). The AI follows rank constraints defined in the persona YAML. Jimmy reviews and course-corrects if needed.
+Enforcement is via persona instructions (honor system). The AI follows rank constraints defined in the persona YAML. Jinn reviews and course-corrects if needed.
 
 ### Gateway Awareness
 
-- On startup + file watch: scans `~/.jimmy/org/`, builds in-memory map of `employee name -> { persona, engine, model, department }`
+- On startup + file watch: scans `~/.jinn/org/`, builds in-memory map of `employee name -> { persona, engine, model, department }`
 - Connector uses this map for `@employee-name` mention routing
 - Web UI API reads this for org chart rendering
 - All creation/management is done by the management skill — the gateway only reads
@@ -471,7 +471,7 @@ Enforcement is via persona instructions (honor system). The AI follows rank cons
 Skills are directories with a SKILL.md file. No runtime, no registration, no loading system. Just files.
 
 ```
-~/.jimmy/skills/
+~/.jinn/skills/
   management/
     SKILL.md
   cron-manager/
@@ -490,22 +490,22 @@ Skills are directories with a SKILL.md file. No runtime, no registration, no loa
 |-------|---------|
 | `management` | Hire/fire employees, create departments, promote ranks, delegate tasks, restructure org |
 | `cron-manager` | Create/edit/delete cron jobs. Always asks user about delivery if not specified |
-| `skill-creator` | Thin wrapper — defers to Claude Code's native skill creation or Codex's native capabilities. Ensures output lands in `~/.jimmy/skills/` and follows conventions |
-| `self-heal` | Diagnose and fix Jimmy issues. Read logs, check config, fix broken state |
+| `skill-creator` | Thin wrapper — defers to Claude Code's native skill creation or Codex's native capabilities. Ensures output lands in `~/.jinn/skills/` and follows conventions |
+| `self-heal` | Diagnose and fix Jinn issues. Read logs, check config, fix broken state |
 | `onboarding` | First-run setup. Detect OpenClaw, analyze and propose migration, scaffold org |
 
 ### Discovery
 
-CLAUDE.md and AGENTS.md reference `~/.jimmy/skills/` and list available skills. The engine reads the relevant SKILL.md when it needs a capability. Creating new skills = creating a new directory with SKILL.md (via skill-creator or native engine commands).
+CLAUDE.md and AGENTS.md reference `~/.jinn/skills/` and list available skills. The engine reads the relevant SKILL.md when it needs a capability. Creating new skills = creating a new directory with SKILL.md (via skill-creator or native engine commands).
 
 ---
 
 ## 9. Initialization Template
 
-### What `jimmy setup` Creates
+### What `jinn setup` Creates
 
 ```
-~/.jimmy/
+~/.jinn/
   CLAUDE.md
   AGENTS.md
   config.yaml
@@ -564,9 +564,9 @@ logging:
 ### Setup Flow
 
 ```
-$ jimmy setup
+$ jinn setup
 
-Jimmy Setup
+Jinn Setup
 
 Checking dependencies...
   [check] Node.js v24.13.0
@@ -581,7 +581,7 @@ Checking auth...
   [x] Claude Code: not logged in -> Run "claude login"
   [check] Codex: authenticated
 
-Creating ~/.jimmy/...
+Creating ~/.jinn/...
   [check] config.yaml
   [check] CLAUDE.md + AGENTS.md
   [check] skills/ (5 pre-packaged)
@@ -589,9 +589,9 @@ Creating ~/.jimmy/...
   [check] SQLite registry initialized
 
 Installing LaunchAgent...
-  [check] com.jimmy.gateway.plist -> ~/Library/LaunchAgents/
+  [check] com.jinn.gateway.plist -> ~/Library/LaunchAgents/
 
-Setup complete! Run "jimmy start" to boot the gateway.
+Setup complete! Run "jinn start" to boot the gateway.
 Open http://localhost:7777 to get started.
 ```
 
@@ -612,15 +612,15 @@ Next.js 15 + Tailwind CSS. Static export bundled with npm package. Served by gat
 
 **Dashboard (`/`)** — At-a-glance overview: gateway status, active sessions, next cron fire, recent activity feed, quick "New Session" button.
 
-**Chat (`/chat`)** — Primary interaction surface. Sidebar with conversation list (Jimmy + employees). Full chat interface. Supports `@employee` mentions, `/new`, `/status`. Input box with engine/model indicator. Onboarding flow lives here on first run.
+**Chat (`/chat`)** — Primary interaction surface. Sidebar with conversation list (Jinn + employees). Full chat interface. Supports `@employee` mentions, `/new`, `/status`. Input box with engine/model indicator. Onboarding flow lives here on first run.
 
 **Sessions (`/sessions`)** — List all sessions with status. Click for detail view with chat history, metadata, follow-up input.
 
-**Organization (`/org`)** — Interactive tree: Jimmy -> departments -> employees with rank badges. Click employee for detail panel (persona, tasks, sessions, engine config). Click department for board view (kanban/list of tasks).
+**Organization (`/org`)** — Interactive tree: Jinn -> departments -> employees with rank badges. Click employee for detail panel (persona, tasks, sessions, engine config). Click department for board view (kanban/list of tasks).
 
 **Cron (`/cron`)** — Job list with enable/disable toggle, schedule, status, history. Click for run history and config editing.
 
-**Skills (`/skills`)** — Grid of skill cards. Click for SKILL.md content. "Create Skill" button triggers chat with Jimmy.
+**Skills (`/skills`)** — Grid of skill cards. Click for SKILL.md content. "Create Skill" button triggers chat with Jinn.
 
 **Logs (`/logs`)** — Live tail of gateway.log. Filter by level and subsystem.
 
@@ -665,17 +665,17 @@ Next.js 15 + Tailwind CSS. Static export bundled with npm package. Served by gat
 
 | Command | Action |
 |---------|--------|
-| `jimmy setup` | Check deps, install missing, create `~/.jimmy/`, install LaunchAgent |
-| `jimmy start` | Start gateway in foreground (default) |
-| `jimmy start --daemon` | Start gateway as background daemon (PID file at `~/.jimmy/gateway.pid`) |
-| `jimmy stop` | Stop the gateway daemon |
-| `jimmy status` | Show gateway status, active sessions, cron summary |
+| `jinn setup` | Check deps, install missing, create `~/.jinn/`, install LaunchAgent |
+| `jinn start` | Start gateway in foreground (default) |
+| `jinn start --daemon` | Start gateway as background daemon (PID file at `~/.jinn/gateway.pid`) |
+| `jinn stop` | Stop the gateway daemon |
+| `jinn status` | Show gateway status, active sessions, cron summary |
 
 ---
 
 ## 12. Error Handling
 
-- Engine process exits non-zero: add X reaction, send error message to connector, log to `~/.jimmy/logs/`
+- Engine process exits non-zero: add X reaction, send error message to connector, log to `~/.jinn/logs/`
 - No automatic retry for any session type (including cron)
 - No automatic engine fallback
 - User decides next action
@@ -686,17 +686,17 @@ Next.js 15 + Tailwind CSS. Static export bundled with npm package. Served by gat
 
 ### First-Run Flow
 
-1. `jimmy setup` installs everything, opens web UI
-2. `/chat` page opens with Jimmy's welcome message
-3. Jimmy (via engine) runs interactive onboarding:
+1. `jinn setup` installs everything, opens web UI
+2. `/chat` page opens with Jinn's welcome message
+3. Jinn (via engine) runs interactive onboarding:
    - What projects are you working on?
    - What do you need help with? (predefined options + free text)
    - Which engines/models to use?
 4. If `~/.openclaw/` detected: "I found your OpenClaw installation. Want me to analyze it?"
 5. Full analysis: skills, cron jobs, knowledge files, memory, config, session history
-6. Jimmy presents migration proposal with recommended org structure
+6. Jinn presents migration proposal with recommended org structure
 7. User approves/tweaks what to migrate (skills, cron, knowledge — each opt-in)
-8. Jimmy scaffolds the org and migrates selected items
+8. Jinn scaffolds the org and migrates selected items
 9. Transitions to dashboard
 
 ---
@@ -704,7 +704,7 @@ Next.js 15 + Tailwind CSS. Static export bundled with npm package. Served by gat
 ## 14. Project Structure
 
 ```
-jimmy/                              # Monorepo root
+jinn/                              # Monorepo root
   README.md
   LICENSE (MIT)
   package.json
@@ -712,7 +712,7 @@ jimmy/                              # Monorepo root
   turbo.json
 
   packages/
-    jimmy/                          # @jimmy-ai/cli
+    jimmy/                          # jinn-cli
       package.json
       tsconfig.json
       bin/
@@ -776,7 +776,7 @@ jimmy/                              # Monorepo root
           self-heal/SKILL.md
           onboarding/SKILL.md
 
-    web/                            # @jimmy-ai/web
+    web/                            # @jinn/web
       package.json
       next.config.ts
       tailwind.config.ts
@@ -821,7 +821,7 @@ When spawning Claude Code as a child process, unset the `CLAUDECODE` env var to 
 
 ```typescript
 const proc = spawn("claude", args, {
-  cwd: jimmyDir,
+  cwd: jinnDir,
   env: { ...process.env, CLAUDECODE: undefined },
 });
 ```
@@ -832,15 +832,15 @@ Channel sessions are shared — all users in a channel talk to the same session.
 
 ### Attachments
 
-Slack file attachments are downloaded to `~/.jimmy/tmp/` and included as file paths in the prompt. Claude Code reads files/images natively.
+Slack file attachments are downloaded to `~/.jinn/tmp/` and included as file paths in the prompt. Claude Code reads files/images natively.
 
 ### Hot-Reload
 
-The gateway watches `~/.jimmy/` for changes:
+The gateway watches `~/.jinn/` for changes:
 - `config.yaml` -> reload config
 - `cron/jobs.json` -> reload cron scheduler
 - `org/` -> rebuild employee registry for mention routing
 
 ### Logging
 
-Logs to both file (`~/.jimmy/logs/gateway.log`) and stdout when running in foreground.
+Logs to both file (`~/.jinn/logs/gateway.log`) and stdout when running in foreground.

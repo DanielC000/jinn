@@ -34,7 +34,7 @@ interface SessionGroup {
   sortOrder: number // 0 = Direct, 1 = employees (alpha), 2 = Cron
 }
 
-const COLLAPSE_STORAGE_KEY = 'jimmy-sidebar-collapsed'
+const COLLAPSE_STORAGE_KEY = 'jinn-sidebar-collapsed'
 
 function formatTime(dateStr?: string): string {
   if (!dateStr) return ''
@@ -49,7 +49,7 @@ function formatTime(dateStr?: string): string {
 
 function getReadSessions(): Set<string> {
   try {
-    const raw = localStorage.getItem('jimmy-read-sessions')
+    const raw = localStorage.getItem('jinn-read-sessions')
     return raw ? new Set(JSON.parse(raw)) : new Set()
   } catch { return new Set() }
 }
@@ -59,7 +59,7 @@ function markSessionRead(id: string) {
   read.add(id)
   const arr = Array.from(read)
   if (arr.length > 500) arr.splice(0, arr.length - 500)
-  localStorage.setItem('jimmy-read-sessions', JSON.stringify(arr))
+  localStorage.setItem('jinn-read-sessions', JSON.stringify(arr))
 }
 
 function loadCollapsedState(): Set<string> {
@@ -139,7 +139,7 @@ export function ChatSidebar({
   events,
 }: ChatSidebarProps) {
   const { settings } = useSettings()
-  const portalName = settings.portalName ?? 'Jimmy'
+  const portalName = settings.portalName ?? 'Jinn'
   const portalSlug = portalName.toLowerCase()
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(true)

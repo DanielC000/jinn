@@ -3,7 +3,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import yaml from "js-yaml";
 import {
-  JIMMY_HOME,
+  JINN_HOME,
   CONFIG_PATH,
   CRON_JOBS,
   CRON_RUNS,
@@ -147,7 +147,7 @@ logging:
 function defaultClaudeMd(portalName: string) {
   return `# ${portalName} AI Gateway
 
-This is the ${portalName} home directory (~/.jimmy).
+This is the ${portalName} home directory (~/.jinn).
 ${portalName} orchestrates Claude Code and Codex as AI engines.
 `;
 }
@@ -160,12 +160,12 @@ Agents are configured via employees in the org/ directory.
 }
 
 export async function runSetup(opts?: { force?: boolean }): Promise<void> {
-  console.log("\nJimmy Setup\n");
+  console.log("\nJinn Setup\n");
 
-  if (opts?.force && fs.existsSync(JIMMY_HOME)) {
-    console.log(`  ${YELLOW}[force]${RESET} Removing ${JIMMY_HOME}...`);
-    fs.rmSync(JIMMY_HOME, { recursive: true, force: true });
-    console.log(`  ${GREEN}[ok]${RESET} Removed ${JIMMY_HOME}\n`);
+  if (opts?.force && fs.existsSync(JINN_HOME)) {
+    console.log(`  ${YELLOW}[force]${RESET} Removing ${JINN_HOME}...`);
+    fs.rmSync(JINN_HOME, { recursive: true, force: true });
+    console.log(`  ${GREEN}[ok]${RESET} Removed ${JINN_HOME}\n`);
   }
 
   // 1. Check Node.js version
@@ -207,11 +207,11 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     else warn("codex --version failed");
   }
 
-  // 5. Create ~/.jimmy directory structure
+  // 5. Create ~/.jinn directory structure
   console.log("");
   const created: string[] = [];
 
-  if (ensureDir(JIMMY_HOME)) created.push(JIMMY_HOME);
+  if (ensureDir(JINN_HOME)) created.push(JINN_HOME);
 
   // Copy or create config files
   const templateConfig = path.join(TEMPLATE_DIR, "config.yaml");
@@ -230,8 +230,8 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   const portalName = (() => {
     try {
       const cfg = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as any;
-      return cfg?.portal?.portalName || "Jimmy";
-    } catch { return "Jimmy"; }
+      return cfg?.portal?.portalName || "Jinn";
+    } catch { return "Jinn"; }
   })();
   const portalSlug = portalName.toLowerCase().replace(/\s+/g, "-");
 
@@ -240,7 +240,7 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     "{{portalSlug}}": portalSlug,
   };
 
-  const claudeMdPath = path.join(JIMMY_HOME, "CLAUDE.md");
+  const claudeMdPath = path.join(JINN_HOME, "CLAUDE.md");
   if (!fs.existsSync(claudeMdPath)) {
     let source = fs.existsSync(templateClaude)
       ? fs.readFileSync(templateClaude, "utf-8")
@@ -250,7 +250,7 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     created.push(claudeMdPath);
   }
 
-  const agentsMdPath = path.join(JIMMY_HOME, "AGENTS.md");
+  const agentsMdPath = path.join(JINN_HOME, "AGENTS.md");
   if (!fs.existsSync(agentsMdPath)) {
     let source = fs.existsSync(templateAgents)
       ? fs.readFileSync(templateAgents, "utf-8")
@@ -275,11 +275,11 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   if (ensureDir(CRON_RUNS)) created.push(CRON_RUNS);
 
   // 9. Create connectors/
-  const connectorsDir = path.join(JIMMY_HOME, "connectors");
+  const connectorsDir = path.join(JINN_HOME, "connectors");
   if (ensureDir(connectorsDir)) created.push(connectorsDir);
 
   // 10. Create knowledge/
-  const knowledgeDir = path.join(JIMMY_HOME, "knowledge");
+  const knowledgeDir = path.join(JINN_HOME, "knowledge");
   if (ensureDir(knowledgeDir)) created.push(knowledgeDir);
 
   // 11. Create tmp/
@@ -322,11 +322,11 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   }
 
   // Create .claude/settings.local.json for engine permissions
-  const settingsPath = path.join(JIMMY_HOME, ".claude", "settings.local.json");
+  const settingsPath = path.join(JINN_HOME, ".claude", "settings.local.json");
   if (ensureFile(settingsPath, JSON.stringify({
     permissions: {
       allow: [
-        "Bash(npm:*)", "Bash(pnpm:*)", "Bash(node:*)", "Bash(jimmy:*)",
+        "Bash(npm:*)", "Bash(pnpm:*)", "Bash(node:*)", "Bash(jinn:*)",
         "Bash(curl:*)", "Bash(cat:*)", "Bash(ls:*)", "Bash(mkdir:*)",
         "Bash(cp:*)", "Bash(mv:*)", "Bash(rm:*)", "Bash(git:*)",
         "Read", "Write", "Edit", "Glob", "Grep",
@@ -347,5 +347,5 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
     }
   }
 
-  console.log(`\n${GREEN}Setup complete.${RESET} Run ${DIM}jimmy start${RESET} to launch the gateway.\n`);
+  console.log(`\n${GREEN}Setup complete.${RESET} Run ${DIM}jinn start${RESET} to launch the gateway.\n`);
 }

@@ -4,7 +4,7 @@ import type { KanbanTicket, TicketStatus, TicketPriority, WorkState } from './ty
 
 export type KanbanStore = Record<string, KanbanTicket>
 
-const STORAGE_KEY = 'jimmy-kanban'
+const STORAGE_KEY = 'jinn-kanban'
 
 const VALID_STATUSES = new Set<TicketStatus>(['backlog', 'todo', 'in-progress', 'review', 'done'])
 const VALID_PRIORITIES = new Set<TicketPriority>(['low', 'medium', 'high'])

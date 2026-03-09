@@ -1,5 +1,5 @@
 /**
- * Conversation storage and utility functions for the Jimmy chat.
+ * Conversation storage and utility functions for the Jinn chat.
  * Conversations are keyed by sessionId (not agentId).
  */
 
@@ -32,7 +32,7 @@ export interface Conversation {
 
 export type ConversationStore = Record<string, Conversation>
 
-const STORAGE_KEY = 'jimmy-conversations'
+const STORAGE_KEY = 'jinn-conversations'
 
 export function loadConversations(): ConversationStore {
   if (typeof window === 'undefined') return {}
@@ -76,7 +76,7 @@ export function addMessage(
  */
 // --- Intermediate message persistence (localStorage) ---
 
-const INTERMEDIATE_PREFIX = 'jimmy-intermediate-'
+const INTERMEDIATE_PREFIX = 'jinn-intermediate-'
 
 export function saveIntermediateMessages(sessionId: string, messages: Message[]): void {
   if (typeof window === 'undefined') return

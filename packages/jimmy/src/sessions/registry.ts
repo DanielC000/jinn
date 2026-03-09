@@ -88,7 +88,7 @@ export interface CreateSessionOpts {
 }
 
 function generateTitle(employee?: string, prompt?: string, portalName?: string): string {
-  const name = employee || portalName || 'Jimmy';
+  const name = employee || portalName || 'Jinn';
   if (!prompt) return name;
   const cleaned = prompt.replace(/\n/g, ' ').replace(/@\w+/g, '').replace(/\s+/g, ' ').trim();
   if (!cleaned) return name;

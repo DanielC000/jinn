@@ -20,13 +20,13 @@ function showNotification(title: string, body: string) {
   new Notification(title, {
     body,
     icon: "/favicon.ico",
-    tag: "jimmy-session",
+    tag: "jinn-session",
   });
 }
 
 export function useGateway() {
   const { settings } = useSettings();
-  const portalName = settings.portalName ?? "Jimmy";
+  const portalName = settings.portalName ?? "Jinn";
   const [events, setEvents] = useState<Array<{ event: string; payload: unknown }>>([]);
   const [connected, setConnected] = useState(false);
   const [connectionSeq, setConnectionSeq] = useState(0);

@@ -43,7 +43,7 @@ function MobileHeader() {
   const pathname = usePathname()
   const { settings } = useSettings()
   const emoji = settings.portalEmoji ?? "\u{1F916}"
-  const portalName = settings.portalName ?? "Jimmy"
+  const portalName = settings.portalName ?? "Jinn"
 
   return (
     <>

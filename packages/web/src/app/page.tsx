@@ -91,7 +91,7 @@ function getQuickLinks(portalName: string) {
 
 export default function DashboardPage() {
   const { settings } = useSettings();
-  const portalName = settings.portalName ?? "Jimmy";
+  const portalName = settings.portalName ?? "Jinn";
   const [status, setStatus] = useState<StatusData | null>(null);
   const [cronCount, setCronCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -1,5 +1,5 @@
 {
-  "name": "jimmy",
+  "name": "jinn",
   "private": true,
   "packageManager": "pnpm@10.6.4",
   "scripts": {
@@ -8,7 +8,7 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "clean": "rm -rf .turbo node_modules/.cache && turbo clean",
-    "jimmy": "node packages/jimmy/dist/bin/jimmy.js",
+    "jinn": "node packages/jimmy/dist/bin/jimmy.js",
     "setup": "pnpm build && node packages/jimmy/dist/bin/jimmy.js setup",
     "setup:force": "pnpm build && node packages/jimmy/dist/bin/jimmy.js setup --force",
     "start": "pnpm clean && pnpm build && node packages/jimmy/dist/bin/jimmy.js start",

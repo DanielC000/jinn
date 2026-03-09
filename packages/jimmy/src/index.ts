@@ -11,13 +11,13 @@ export type {
   CronDelivery,
   Employee,
   Department,
-  JimmyConfig,
+  JinnConfig,
 } from "./shared/types.js";
 
 export { loadConfig } from "./shared/config.js";
 export { configureLogger, logger } from "./shared/logger.js";
 export {
-  JIMMY_HOME,
+  JINN_HOME,
   CONFIG_PATH,
   SESSIONS_DB,
   CRON_JOBS,

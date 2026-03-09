@@ -4,10 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PID_FILE } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
-import type { JimmyConfig } from "../shared/types.js";
+import type { JinnConfig } from "../shared/types.js";
 import { startGateway } from "./server.js";
 
-export async function startForeground(config: JimmyConfig): Promise<void> {
+export async function startForeground(config: JinnConfig): Promise<void> {
   const cleanup = await startGateway(config);
 
   let shuttingDown = false;
@@ -34,7 +34,7 @@ export async function startForeground(config: JimmyConfig): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-export function startDaemon(config: JimmyConfig): void {
+export function startDaemon(config: JinnConfig): void {
   const __filename = fileURLToPath(import.meta.url);
   const entryScript = path.resolve(
     path.dirname(__filename),

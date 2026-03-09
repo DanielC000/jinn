@@ -92,7 +92,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
     }
     if (
       typeof window !== "undefined" &&
-      !localStorage.getItem("jimmy-onboarded")
+      !localStorage.getItem("jinn-onboarded")
     ) {
       setVisible(true)
     }
@@ -119,7 +119,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
         // Best-effort: localStorage still has the values
       })
       if (!forceOpen) {
-        localStorage.setItem("jimmy-onboarded", "true")
+        localStorage.setItem("jinn-onboarded", "true")
       }
       setVisible(false)
       onClose?.()
@@ -237,7 +237,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
                   marginBottom: "var(--space-2)",
                 }}
               >
-                Welcome to {localName || "Jimmy"}
+                Welcome to {localName || "Jinn"}
               </h2>
               <p
                 style={{
@@ -273,7 +273,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
                   <input
                     type="text"
                     className="apple-input"
-                    placeholder="Jimmy"
+                    placeholder="Jinn"
                     value={localName}
                     onChange={(e) => setLocalName(e.target.value)}
                     autoFocus

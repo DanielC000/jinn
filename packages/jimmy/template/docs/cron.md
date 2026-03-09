@@ -1,6 +1,6 @@
 # Cron
 
-{{portalName}} supports scheduled AI jobs defined in `~/.jimmy/cron/jobs.json`.
+{{portalName}} supports scheduled AI jobs defined in `~/.jinn/cron/jobs.json`.
 
 ## Job Schema
 
@@ -52,7 +52,7 @@ No restart required. Engines can edit `jobs.json` directly to create or modify s
 
 ## Run Logs
 
-Each job execution is logged to `~/.jimmy/cron/runs/<jobId>.jsonl`. Each line is a JSON object:
+Each job execution is logged to `~/.jinn/cron/runs/<jobId>.jsonl`. Each line is a JSON object:
 
 ```json
 {
@@ -131,7 +131,7 @@ Direct employee-to-user delivery is only acceptable for simple, no-review-needed
     "timezone": "America/New_York",
     "engine": "claude",
     "employee": "{{portalSlug}}",
-    "prompt": "Review all skills in ~/.jimmy/skills/ and suggest improvements or removals for unused skills."
+    "prompt": "Review all skills in ~/.jinn/skills/ and suggest improvements or removals for unused skills."
   }
 ]
 ```

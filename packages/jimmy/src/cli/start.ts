@@ -1,12 +1,12 @@
 import fs from "node:fs";
-import { JIMMY_HOME } from "../shared/paths.js";
+import { JINN_HOME } from "../shared/paths.js";
 import { loadConfig } from "../shared/config.js";
 import { startForeground, startDaemon } from "../gateway/lifecycle.js";
 
 export async function runStart(opts: { daemon?: boolean }): Promise<void> {
-  if (!fs.existsSync(JIMMY_HOME)) {
+  if (!fs.existsSync(JINN_HOME)) {
     console.error(
-      `Error: ${JIMMY_HOME} does not exist. Run "jimmy setup" first.`
+      `Error: ${JINN_HOME} does not exist. Run "jinn setup" first.`
     );
     process.exit(1);
   }

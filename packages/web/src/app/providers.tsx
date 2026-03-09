@@ -15,7 +15,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const apply = useCallback((t: ThemeId) => {
     setThemeState(t)
-    localStorage.setItem('jimmy-theme', t)
+    localStorage.setItem('jinn-theme', t)
     const el = document.documentElement
     el.removeAttribute('data-theme')
     if (t === 'system') {
@@ -27,7 +27,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    const saved = localStorage.getItem('jimmy-theme') as ThemeId | null
+    const saved = localStorage.getItem('jinn-theme') as ThemeId | null
     if (saved) apply(saved)
   }, [apply])
 

@@ -3,7 +3,7 @@ export interface EmployeeOverride {
   profileImage?: string
 }
 
-export interface JimmySettings {
+export interface JinnSettings {
   accentColor: string | null
   portalName: string | null
   portalSubtitle: string | null
@@ -16,7 +16,7 @@ export interface JimmySettings {
   employeeOverrides: Record<string, EmployeeOverride>
 }
 
-export const DEFAULTS: JimmySettings = {
+export const DEFAULTS: JinnSettings = {
   accentColor: null,
   portalName: null,
   portalSubtitle: null,
@@ -29,9 +29,9 @@ export const DEFAULTS: JimmySettings = {
   employeeOverrides: {},
 }
 
-const STORAGE_KEY = 'jimmy-settings'
+const STORAGE_KEY = 'jinn-settings'
 
-export function loadSettings(): JimmySettings {
+export function loadSettings(): JinnSettings {
   if (typeof window === 'undefined') return { ...DEFAULTS }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -43,7 +43,7 @@ export function loadSettings(): JimmySettings {
   }
 }
 
-export function saveSettings(settings: JimmySettings): void {
+export function saveSettings(settings: JinnSettings): void {
   if (typeof window === 'undefined') return
   localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
 }

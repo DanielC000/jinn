@@ -1,13 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Employee, JimmyConfig } from "../shared/types.js";
-import { JIMMY_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
+import type { Employee, JinnConfig } from "../shared/types.js";
+import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
 
 const MAX_CONTEXT_CHARS = 100000;
 
 /**
  * Build a rich system prompt for engine sessions.
- * This is what makes Jimmy "smart" — the engine sees all of this context
+ * This is what makes Jinn "smart" — the engine sees all of this context
  * before responding to the user.
  */
 export function buildContext(opts: {
@@ -17,7 +17,7 @@ export function buildContext(opts: {
   user: string;
   employee?: Employee;
   connectors?: string[];
-  config?: JimmyConfig;
+  config?: JinnConfig;
   sessionId?: string;
   portalName?: string;
   operatorName?: string;
@@ -31,7 +31,7 @@ export function buildContext(opts: {
     : "http://127.0.0.1:7777";
 
   // Resolve personalized names from config
-  const portalName = opts.portalName || opts.config?.portal?.portalName || "Jimmy";
+  const portalName = opts.portalName || opts.config?.portal?.portalName || "Jinn";
   const operatorName = opts.operatorName || opts.config?.portal?.operatorName;
   const language = opts.language || opts.config?.portal?.language || "English";
 
@@ -118,7 +118,7 @@ ${languageInstruction}
 - **Model**: ${employee.model}
 
 ## System context
-You are part of the ${portalName} AI gateway — a system that orchestrates AI workers. You have access to the filesystem, can run commands, call APIs, and send messages via connectors. Your working directory is \`~/.jimmy\` (${JIMMY_HOME}).
+You are part of the ${portalName} AI gateway — a system that orchestrates AI workers. You have access to the filesystem, can run commands, call APIs, and send messages via connectors. Your working directory is \`~/.jinn\` (${JINN_HOME}).
 
 You can:
 - Read and write files in the home directory
@@ -152,7 +152,7 @@ ${portalName} is a personal AI assistant and gateway daemon. You are proactive, 
 - **Remember context**: You're part of a persistent system. Sessions can be resumed. Build on previous work.
 ${languageInstruction}
 ## Your home directory
-Your working directory is \`~/.jimmy\` (${JIMMY_HOME}). This contains:
+Your working directory is \`~/.jinn\` (${JINN_HOME}). This contains:
 - \`config.yaml\` — your configuration (engines, connectors, logging)
 - \`org/\` — employee definitions (YAML files defining AI workers)
 - \`skills/\` — reusable skill prompts
@@ -180,11 +180,11 @@ function buildSessionContext(opts: {
   ctx += `- Channel: ${opts.channel}\n`;
   if (opts.thread) ctx += `- Thread: ${opts.thread}\n`;
   ctx += `- User: ${opts.user}\n`;
-  ctx += `- Working directory: ${JIMMY_HOME}`;
+  ctx += `- Working directory: ${JINN_HOME}`;
   return ctx;
 }
 
-function buildConfigContext(config: JimmyConfig, gatewayUrl: string): string {
+function buildConfigContext(config: JinnConfig, gatewayUrl: string): string {
   const lines: string[] = [`## Current configuration`];
   lines.push(`- Gateway: ${gatewayUrl}`);
   lines.push(`- Default engine: ${config.engines.default}`);
@@ -245,7 +245,7 @@ function buildCronContext(): string | null {
 }
 
 function buildKnowledgeContext(): string | null {
-  const dirs = [DOCS_DIR, path.join(JIMMY_HOME, "knowledge")];
+  const dirs = [DOCS_DIR, path.join(JINN_HOME, "knowledge")];
   const allFiles: string[] = [];
 
   for (const dir of dirs) {
@@ -285,7 +285,7 @@ function buildConnectorContext(connectors: string[], gatewayUrl: string, portalN
   }
 
   lines.push(`\n- **List all connectors**: \`curl ${gatewayUrl}/api/connectors\``);
-  lines.push(`- Channel IDs and connector config can be found in \`~/.jimmy/config.yaml\``);
+  lines.push(`- Channel IDs and connector config can be found in \`~/.jinn/config.yaml\``);
   return lines.join("\n");
 }
 
@@ -339,7 +339,7 @@ function buildEnvironmentContext(): string | null {
 }
 
 function buildEvolutionContext(portalName: string): string {
-  const profilePath = path.join(JIMMY_HOME, "knowledge", "user-profile.md");
+  const profilePath = path.join(JINN_HOME, "knowledge", "user-profile.md");
   let profileContent = "";
   try { profileContent = fs.readFileSync(profilePath, "utf-8").trim(); } catch {}
 
@@ -354,14 +354,14 @@ function buildEvolutionContext(portalName: string): string {
     lines.push(`2. What should ${portalName} help you automate? (code reviews, deployments, monitoring, etc.)`);
     lines.push(`3. Communication preferences — emoji style, verbosity (concise vs detailed), language`);
     lines.push(`4. Any active projects ${portalName} should know about?`);
-    lines.push(`\nAfter the user responds, write their answers to \`~/.jimmy/knowledge/user-profile.md\` and \`~/.jimmy/knowledge/preferences.md\`.`);
+    lines.push(`\nAfter the user responds, write their answers to \`~/.jinn/knowledge/user-profile.md\` and \`~/.jinn/knowledge/preferences.md\`.`);
     lines.push(`Then proceed to help with their original request.`);
   } else {
     lines.push(`You learn and evolve over time. When you discover new information about the user, their projects, or their preferences:`);
-    lines.push(`- Update \`~/.jimmy/knowledge/user-profile.md\` with business/identity info`);
-    lines.push(`- Update \`~/.jimmy/knowledge/preferences.md\` with style/communication preferences`);
-    lines.push(`- Update \`~/.jimmy/knowledge/projects.md\` with project details`);
-    lines.push(`- If the user gives you persistent feedback (e.g. "always do X", "never do Y"), update \`~/.jimmy/CLAUDE.md\``);
+    lines.push(`- Update \`~/.jinn/knowledge/user-profile.md\` with business/identity info`);
+    lines.push(`- Update \`~/.jinn/knowledge/preferences.md\` with style/communication preferences`);
+    lines.push(`- Update \`~/.jinn/knowledge/projects.md\` with project details`);
+    lines.push(`- If the user gives you persistent feedback (e.g. "always do X", "never do Y"), update \`~/.jinn/CLAUDE.md\``);
     lines.push(`\nDo this silently — don't announce every file update. Just evolve.`);
   }
 
@@ -376,8 +376,8 @@ function trimContext(sections: string[]): string {
   // Order: environment > knowledge content > skill content > org personas
   const trimmable = [
     { marker: "## Local environment", summary: "## Local environment\nRun `ls ~/` to explore the local filesystem." },
-    { marker: "## Knowledge base", summary: "## Knowledge base\nKnowledge files are in `~/.jimmy/knowledge/` and `~/.jimmy/docs/`. Read them directly when needed." },
-    { marker: "## Organization", summary: "## Organization\nEmployee files are in `~/.jimmy/org/`. Read them directly when needed." },
+    { marker: "## Knowledge base", summary: "## Knowledge base\nKnowledge files are in `~/.jinn/knowledge/` and `~/.jinn/docs/`. Read them directly when needed." },
+    { marker: "## Organization", summary: "## Organization\nEmployee files are in `~/.jinn/org/`. Read them directly when needed." },
   ];
 
   for (const { marker, summary } of trimmable) {

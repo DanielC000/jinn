@@ -2,7 +2,7 @@ import cron from "node-cron";
 import type {
   CronJob,
   Engine,
-  JimmyConfig,
+  JinnConfig,
   Connector,
 } from "../shared/types.js";
 import { runCronJob } from "./runner.js";
@@ -10,13 +10,13 @@ import { logger } from "../shared/logger.js";
 
 let tasks: cron.ScheduledTask[] = [];
 let currentEngines: Map<string, Engine>;
-let currentConfig: JimmyConfig;
+let currentConfig: JinnConfig;
 let currentConnectors: Map<string, Connector>;
 
 export function startScheduler(
   jobs: CronJob[],
   engines: Map<string, Engine>,
-  config: JimmyConfig,
+  config: JinnConfig,
   connectors: Map<string, Connector>,
 ): void {
   currentEngines = engines;

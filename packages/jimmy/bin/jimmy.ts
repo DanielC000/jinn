@@ -8,14 +8,14 @@ import { runChromeAllow } from "../src/cli/chrome-allow.js";
 
 const program = new Command();
 program
-  .name("jimmy")
+  .name("jinn")
   .description("Lightweight AI gateway daemon")
   .version("0.1.0");
 
 program
   .command("setup")
-  .description("Initialize Jimmy and install dependencies")
-  .option("--force", "Delete existing ~/.jimmy and reinitialize from scratch")
+  .description("Initialize Jinn and install dependencies")
+  .option("--force", "Delete existing ~/.jinn and reinitialize from scratch")
   .action(async (opts) => {
     await runSetup(opts);
   });

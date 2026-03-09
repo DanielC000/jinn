@@ -1,12 +1,12 @@
-# Jimmy
+# Jinn
 
 Lightweight AI gateway daemon orchestrating Claude Code and Codex.
 
-## What is Jimmy?
+## What is Jinn?
 
-Jimmy is an open-source AI gateway that wraps the Claude Code CLI and Codex SDK
+Jinn is an open-source AI gateway that wraps the Claude Code CLI and Codex SDK
 behind a unified daemon process. It routes tasks to AI engines, manages
-connectors like Slack, and schedules background work via cron. Jimmy is a bus,
+connectors like Slack, and schedules background work via cron. Jinn is a bus,
 not a brain.
 
 ## Features
@@ -22,9 +22,9 @@ not a brain.
 ## Quick Start
 
 ```bash
-npm install -g @jimmy-ai/cli
-jimmy setup
-jimmy start
+npm install -g jinn-cli
+jinn setup
+jinn start
 ```
 
 Then open [http://localhost:7777](http://localhost:7777).
@@ -33,7 +33,7 @@ Then open [http://localhost:7777](http://localhost:7777).
 
 ```
                           +----------------+
-                          |   jimmy CLI    |
+                          |   jinn CLI     |
                           +-------+--------+
                                   |
                           +-------v--------+
@@ -60,7 +60,7 @@ cron jobs, and serves the web dashboard.
 
 ## Configuration
 
-Jimmy reads its configuration from `~/.jimmy/config.yaml`. An example:
+Jinn reads its configuration from `~/.jinn/config.yaml`. An example:
 
 ```yaml
 gateway:
@@ -93,7 +93,7 @@ org:
 ## Project Structure
 
 ```
-jimmy/
+jinn/
   packages/
     jimmy/          # Core gateway daemon + CLI
     web/            # Web dashboard (frontend)
@@ -105,8 +105,8 @@ jimmy/
 ## Development
 
 ```bash
-git clone https://github.com/your-org/jimmy.git
-cd jimmy
+git clone https://github.com/your-org/jinn.git
+cd jinn
 pnpm install
 pnpm build
 pnpm dev
@@ -124,7 +124,7 @@ pnpm dev
 
 ## Acknowledgments
 
-The web dashboard UI is built on components from [ClawPort UI](https://github.com/JohnRiceML/clawport-ui) by John Rice, adapted for Jimmy's architecture. ClawPort provides the foundation for the theme system, shadcn components, org map, kanban board, cost dashboard, and activity console.
+The web dashboard UI is built on components from [ClawPort UI](https://github.com/JohnRiceML/clawport-ui) by John Rice, adapted for Jinn's architecture. ClawPort provides the foundation for the theme system, shadcn components, org map, kanban board, cost dashboard, and activity console.
 
 ## License
 

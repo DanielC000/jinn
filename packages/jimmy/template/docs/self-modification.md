@@ -1,6 +1,6 @@
 # Self-Modification
 
-{{portalName}}'s engines operate within `~/.jimmy/` and can modify any file in that directory. This enables {{portalName}} to update its own configuration, create skills, manage cron jobs, and restructure the organization at runtime.
+{{portalName}}'s engines operate within `~/.jinn/` and can modify any file in that directory. This enables {{portalName}} to update its own configuration, create skills, manage cron jobs, and restructure the organization at runtime.
 
 ## What {{portalName}} Can Edit
 
@@ -25,7 +25,7 @@ Changes take effect immediately. No restart required.
 
 ## Safety Guidelines
 
-Engines have full file access within `~/.jimmy/`. To avoid breaking the gateway:
+Engines have full file access within `~/.jinn/`. To avoid breaking the gateway:
 
 ### Do
 
@@ -38,28 +38,28 @@ Engines have full file access within `~/.jimmy/`. To avoid breaking the gateway:
 ### Do Not
 
 - Break `config.yaml` structure — invalid YAML will prevent config reload
-- Corrupt `jimmy.db` — the SQLite database is managed by the gateway process
+- Corrupt `jinn.db` — the SQLite database is managed by the gateway process
 - Write invalid JSON to `jobs.json` — this will cancel all cron jobs with nothing to replace them
 - Delete the `docs/` directory — these reference docs are needed for self-awareness
-- Modify files outside `~/.jimmy/` unless explicitly instructed by the user
+- Modify files outside `~/.jinn/` unless explicitly instructed by the user
 
 ## Example: Creating a Cron Job at Runtime
 
 An engine can create a new cron job by reading `cron/jobs.json`, appending a new entry, and writing it back:
 
 ```
-1. Read ~/.jimmy/cron/jobs.json
+1. Read ~/.jinn/cron/jobs.json
 2. Parse the JSON array
 3. Append new job object with unique id, schedule, prompt, etc.
 4. Validate the full array
-5. Write back to ~/.jimmy/cron/jobs.json
+5. Write back to ~/.jinn/cron/jobs.json
 6. The file watcher automatically reschedules all jobs
 ```
 
 ## Example: Adding a New Employee
 
 ```
-1. Create ~/.jimmy/org/<department>/<name>.yaml with required fields
+1. Create ~/.jinn/org/<department>/<name>.yaml with required fields
 2. The file watcher detects the new file and rebuilds the employee registry
 3. The new employee is immediately available for @mention routing
 ```

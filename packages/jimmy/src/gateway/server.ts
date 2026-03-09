@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { JimmyConfig, Connector, Employee } from "../shared/types.js";
+import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, recoverStaleSessions } from "../sessions/registry.js";
@@ -85,7 +85,7 @@ function serveStatic(
 export type GatewayCleanup = () => Promise<void>;
 
 export async function startGateway(
-  config: JimmyConfig,
+  config: JinnConfig,
 ): Promise<GatewayCleanup> {
   const bootId = randomUUID().slice(0, 8);
 
@@ -96,7 +96,7 @@ export async function startGateway(
     file: config.logging.file,
   });
 
-  const gatewayName = config.portal?.portalName || "Jimmy";
+  const gatewayName = config.portal?.portalName || "Jinn";
   logger.info(`Starting ${gatewayName} gateway (boot ${bootId}, pid ${process.pid})...`);
 
   // Initialize database and recover any sessions stuck from a previous run

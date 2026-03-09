@@ -87,7 +87,7 @@ export function SessionDetail({
   onNavigate?: (id: string) => void;
 }) {
   const { settings } = useSettings();
-  const portalName = settings.portalName ?? "Jimmy";
+  const portalName = settings.portalName ?? "Jinn";
   const [children, setChildren] = useState<Session[]>([]);
 
   useEffect(() => {

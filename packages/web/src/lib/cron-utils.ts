@@ -1,6 +1,6 @@
 /**
  * Cron schedule parsing and human-readable description utilities.
- * No external dependencies — covers the common patterns used in Jimmy cron jobs.
+ * No external dependencies — covers the common patterns used in Jinn cron jobs.
  */
 
 const DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays']

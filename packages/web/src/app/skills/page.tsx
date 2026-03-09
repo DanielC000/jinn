@@ -27,7 +27,7 @@ interface Skill {
 
 export default function SkillsPage() {
   const { settings } = useSettings();
-  const portalName = settings.portalName ?? "Jimmy";
+  const portalName = settings.portalName ?? "Jinn";
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

@@ -13,7 +13,7 @@ export interface Engine {
 }
 
 export interface InterruptibleEngine extends Engine {
-  /** Kill a running engine process for a specific Jimmy session. */
+  /** Kill a running engine process for a specific Jinn session. */
   kill(sessionId: string, reason?: string): void;
   /** Check if a live engine process is still running for this session. */
   isAlive(sessionId: string): boolean;
@@ -37,7 +37,7 @@ export interface EngineRunOpts {
   /** Extra CLI flags to pass to the engine binary (e.g. ["--chrome"]) */
   cliFlags?: string[];
   onStream?: (delta: StreamDelta) => void;
-  /** Unique Jimmy session ID for tracking the spawned process. */
+  /** Unique Jinn session ID for tracking the spawned process. */
   sessionId?: string;
 }
 
@@ -147,7 +147,7 @@ export interface PortalConfig {
   language?: string;
 }
 
-export interface JimmyConfig {
+export interface JinnConfig {
   gateway: { port: number; host: string; streaming?: boolean };
   engines: {
     default: "claude" | "codex";

@@ -1,4 +1,4 @@
-# Contributing to Jimmy
+# Contributing to Jinn
 
 Thanks for your interest in contributing. This guide covers the basics.
 
@@ -34,7 +34,7 @@ Thanks for your interest in contributing. This guide covers the basics.
 
 ## Project Layout
 
-- `packages/jimmy` -- Core gateway daemon and CLI.
+- `packages/jimmy` -- Core gateway daemon and CLI (package dir).
 - `packages/web` -- Web dashboard frontend.
 
 ## Questions?

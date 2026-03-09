@@ -67,8 +67,8 @@ export default function OrgPage() {
           }),
         );
         const coo: Employee = {
-          name: (settings.portalName ?? "Jimmy").toLowerCase(),
-          displayName: settings.portalName ?? "Jimmy",
+          name: (settings.portalName ?? "Jinn").toLowerCase(),
+          displayName: settings.portalName ?? "Jinn",
           department: "",
           rank: "executive",
           engine: "claude",
