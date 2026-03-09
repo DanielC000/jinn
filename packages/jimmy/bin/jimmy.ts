@@ -41,9 +41,10 @@ program
 program
   .command("stop")
   .description("Stop the gateway daemon")
-  .action(async () => {
+  .option("-p, --port <port>", "Port to kill the process on (default: from config or 7777)")
+  .action(async (opts: { port?: string }) => {
     const { runStop } = await import("../src/cli/stop.js");
-    await runStop();
+    await runStop(opts.port ? parseInt(opts.port, 10) : undefined);
   });
 
 program

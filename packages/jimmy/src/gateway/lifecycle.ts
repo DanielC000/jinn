@@ -62,28 +62,70 @@ export function startDaemon(config: JinnConfig): void {
   child.unref();
 }
 
-export function stop(): boolean {
-  if (!fs.existsSync(PID_FILE)) {
-    logger.warn("No PID file found. Gateway may not be running.");
-    return false;
+export function stop(port?: number): boolean {
+  // Try PID file first
+  if (fs.existsSync(PID_FILE)) {
+    const pid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
+
+    try {
+      process.kill(pid, "SIGTERM");
+      logger.info(`Sent SIGTERM to gateway process ${pid}`);
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") {
+        logger.warn(`Process ${pid} not found. Cleaning up stale PID file.`);
+      } else {
+        throw err;
+      }
+    }
+
+    fs.unlinkSync(PID_FILE);
+    return true;
   }
 
-  const pid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
-
-  try {
-    process.kill(pid, "SIGTERM");
-    logger.info(`Sent SIGTERM to gateway process ${pid}`);
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") {
-      logger.warn(`Process ${pid} not found. Cleaning up stale PID file.`);
-    } else {
+  // No PID file — try to kill whatever is listening on the port
+  const targetPort = port ?? resolvePort();
+  const pid = findPidOnPort(targetPort);
+  if (pid) {
+    try {
+      process.kill(pid, "SIGTERM");
+      logger.info(`Killed process ${pid} on port ${targetPort}`);
+      return true;
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") {
+        logger.warn(`Process ${pid} already gone.`);
+        return true;
+      }
       throw err;
     }
   }
 
-  fs.unlinkSync(PID_FILE);
-  return true;
+  logger.warn(`No PID file found and nothing listening on port ${targetPort}.`);
+  return false;
+}
+
+function resolvePort(): number {
+  try {
+    const { loadConfig } = require("../shared/config.js");
+    const config = loadConfig();
+    return config.gateway?.port || 7777;
+  } catch {
+    return 7777;
+  }
+}
+
+function findPidOnPort(port: number): number | null {
+  try {
+    const { execSync } = require("node:child_process");
+    const output = execSync(`lsof -ti tcp:${port}`, { encoding: "utf-8" }).trim();
+    if (!output) return null;
+    // Could be multiple lines — take the first PID
+    const pid = parseInt(output.split("\n")[0], 10);
+    return isNaN(pid) ? null : pid;
+  } catch {
+    return null;
+  }
 }
 
 export interface GatewayStatus {
