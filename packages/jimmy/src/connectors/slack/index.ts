@@ -17,12 +17,14 @@ export class SlackConnector implements Connector {
   name = "slack";
   private app: App;
   private handler: ((msg: IncomingMessage) => void) | null = null;
-  private readonly shareSessionInChannel: boolean;
   private readonly allowedUsers: Set<string> | null;
   private readonly ignoreOldMessagesOnBoot: boolean;
   private readonly bootTimeMs = Date.now();
   private started = false;
   private lastError: string | null = null;
+  private channelNameCache = new Map<string, { name: string; cachedAt: number }>();
+  private botUserId: string | null = null;
+  private static CHANNEL_CACHE_TTL_MS = 3600_000; // 1 hour
 
   private readonly capabilities: ConnectorCapabilities = {
     threading: true,
@@ -60,7 +62,6 @@ export class SlackConnector implements Connector {
       appToken: config.appToken,
       socketMode: true,
     });
-    this.shareSessionInChannel = !!config.shareSessionInChannel;
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
     const allowFrom = Array.isArray(config.allowFrom)
       ? config.allowFrom
@@ -68,6 +69,24 @@ export class SlackConnector implements Connector {
         ? config.allowFrom.split(",").map((value) => value.trim()).filter(Boolean)
         : [];
     this.allowedUsers = allowFrom.length > 0 ? new Set(allowFrom) : null;
+  }
+
+  private async resolveChannelName(channelId: string): Promise<string | undefined> {
+    const cached = this.channelNameCache.get(channelId);
+    if (cached && Date.now() - cached.cachedAt < SlackConnector.CHANNEL_CACHE_TTL_MS) {
+      return cached.name;
+    }
+    try {
+      const result = await this.app.client.conversations.info({ channel: channelId });
+      const name = result.channel?.name;
+      if (name) {
+        this.channelNameCache.set(channelId, { name, cachedAt: Date.now() });
+        return name;
+      }
+    } catch (err) {
+      logger.debug(`Failed to resolve channel name for ${channelId}: ${err}`);
+    }
+    return undefined;
   }
 
   async start() {
@@ -91,9 +110,7 @@ export class SlackConnector implements Connector {
         return;
       }
 
-      const sessionKey = deriveSessionKey(event as any, {
-        shareSessionInChannel: this.shareSessionInChannel,
-      });
+      const sessionKey = deriveSessionKey(event as any);
       const replyContext = buildReplyContext(event as any);
 
       // Fetch parent message for thread replies so the session has full context
@@ -138,6 +155,8 @@ export class SlackConnector implements Connector {
         }
       }
 
+      const channelName = await this.resolveChannelName((event as any).channel);
+
       const msg: IncomingMessage = {
         connector: this.name,
         source: "slack",
@@ -154,6 +173,113 @@ export class SlackConnector implements Connector {
         transportMeta: {
           channelType: ((event as any).channel_type as string) || "channel",
           team: ((event as any).team as string) || null,
+          channelName: channelName || null,
+        },
+      };
+
+      this.handler(msg);
+    });
+
+    // Fetch bot's own user ID for filtering self-reactions
+    try {
+      const authResult = await this.app.client.auth.test();
+      this.botUserId = authResult.user_id ?? null;
+      logger.info(`[slack] Bot user ID: ${this.botUserId}`);
+    } catch (err) {
+      logger.warn(`[slack] Failed to get bot user ID: ${err}`);
+    }
+
+    this.app.event("reaction_added", async ({ event }) => {
+      // Only handle reactions on messages (not files, etc.)
+      if (event.item.type !== "message") return;
+
+      // Skip bot's own reactions
+      if (this.botUserId && event.user === this.botUserId) return;
+
+      if (!this.handler) return;
+
+      // Check allowed users
+      if (this.allowedUsers && !this.allowedUsers.has(event.user)) {
+        logger.debug(`Ignoring reaction from unauthorized user ${event.user}`);
+        return;
+      }
+
+      const channelId = event.item.channel;
+      const messageTs = event.item.ts;
+      const emoji = event.reaction;
+
+      // Skip old reactions replayed on boot
+      if (this.ignoreOldMessagesOnBoot && isOldSlackMessage(messageTs, this.bootTimeMs)) {
+        logger.debug(`Ignoring old Slack reaction on ${messageTs}`);
+        return;
+      }
+
+      logger.info(`[slack] Reaction :${emoji}: by ${event.user} on ${channelId}:${messageTs}`);
+
+      // Fetch the reacted-to message text
+      // Try conversations.history first (works for root messages),
+      // fall back to conversations.replies (for threaded messages)
+      let messageText = "";
+      try {
+        const histResult = await this.app.client.conversations.history({
+          channel: channelId,
+          latest: messageTs,
+          oldest: messageTs,
+          inclusive: true,
+          limit: 1,
+        });
+        messageText = histResult.messages?.[0]?.text || "";
+
+        // If not found in history, try as a threaded reply
+        if (!messageText) {
+          const replyResult = await this.app.client.conversations.replies({
+            channel: channelId,
+            ts: messageTs,
+            limit: 1,
+            inclusive: true,
+          });
+          messageText = replyResult.messages?.[0]?.text || "";
+        }
+      } catch (err) {
+        logger.warn(`[slack] Failed to fetch reacted-to message: ${err}`);
+        return;
+      }
+
+      if (!messageText) {
+        logger.debug(`[slack] Reacted-to message has no text, skipping`);
+        return;
+      }
+
+      // Resolve channel name
+      const channelName = await this.resolveChannelName(channelId);
+      const channelDisplay = channelName ? `#${channelName}` : channelId;
+
+      // Build the prompt with reaction context
+      const prompt = `[Reaction :${emoji}: on message in ${channelDisplay}]\n\nOriginal message:\n"${messageText}"\n\nThe user reacted with :${emoji}: to this message. Interpret and act on the reaction.`;
+
+      const sessionKey = `slack:reaction:${channelId}:${messageTs}`;
+
+      const msg: IncomingMessage = {
+        connector: this.name,
+        source: "slack",
+        sessionKey,
+        replyContext: {
+          channel: channelId,
+          thread: messageTs,
+          messageTs,
+        },
+        messageId: messageTs,
+        channel: channelId,
+        thread: messageTs,
+        user: event.user,
+        userId: event.user,
+        text: prompt,
+        attachments: [],
+        raw: event,
+        transportMeta: {
+          channelType: "channel",
+          team: null,
+          channelName: channelName || null,
         },
       };
 

@@ -163,6 +163,7 @@ export class SessionManager {
         connectors: this.connectorNames,
         config: this.config,
         sessionId: session.id,
+        channelName: (msg.transportMeta?.channelName as string) || undefined,
       });
 
       const engineConfig = session.engine === "codex"

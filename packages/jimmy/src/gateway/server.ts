@@ -136,7 +136,6 @@ export async function startGateway(
       const slack = new SlackConnector({
         appToken: config.connectors.slack.appToken,
         botToken: config.connectors.slack.botToken,
-        shareSessionInChannel: config.connectors.slack.shareSessionInChannel,
         allowFrom: config.connectors.slack.allowFrom,
         ignoreOldMessagesOnBoot: config.connectors.slack.ignoreOldMessagesOnBoot,
       });

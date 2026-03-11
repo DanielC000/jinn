@@ -22,6 +22,7 @@ export function buildContext(opts: {
   portalName?: string;
   operatorName?: string;
   language?: string;
+  channelName?: string;
 }): string {
   const sections: string[] = [];
 
@@ -173,11 +174,18 @@ function buildSessionContext(opts: {
   thread?: string;
   user: string;
   sessionId?: string;
+  channelName?: string;
 }): string {
   let ctx = `## Current session\n`;
   if (opts.sessionId) ctx += `- Session ID: ${opts.sessionId}\n`;
   ctx += `- Source: ${opts.source}\n`;
-  ctx += `- Channel: ${opts.channel}\n`;
+  if (opts.channelName) {
+    ctx += `- Channel: #${opts.channelName} (${opts.channel})\n`;
+  } else if (opts.source === "slack" && opts.channel.startsWith("D")) {
+    ctx += `- Channel: Direct Message (${opts.channel})\n`;
+  } else {
+    ctx += `- Channel: ${opts.channel}\n`;
+  }
   if (opts.thread) ctx += `- Thread: ${opts.thread}\n`;
   ctx += `- User: ${opts.user}\n`;
   ctx += `- Working directory: ${JINN_HOME}`;

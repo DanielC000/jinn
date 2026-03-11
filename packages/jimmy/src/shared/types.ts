@@ -220,7 +220,6 @@ export interface WebConnectorConfig {}
 export interface SlackConnectorConfig {
   appToken: string;
   botToken: string;
-  shareSessionInChannel?: boolean;
   allowFrom?: string | string[];
   ignoreOldMessagesOnBoot?: boolean;
 }
