@@ -37,7 +37,7 @@ export function ChatTabBar({ tabs, activeIndex, onSwitch, onClose, onNew, toolba
         <button
           onClick={onToggleSidebar}
           aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-          className="hidden size-10 shrink-0 items-center justify-center border-r border-border text-muted-foreground transition-colors hover:bg-[var(--fill-quaternary)] hover:text-foreground lg:flex"
+          className="flex size-10 shrink-0 items-center justify-center border-r border-border text-muted-foreground transition-colors hover:bg-[var(--fill-quaternary)] hover:text-foreground"
         >
           {sidebarCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
         </button>

@@ -44,7 +44,7 @@ function MobileHeader({ actions }: { actions?: React.ReactNode }) {
       </div>
 
       {open && (
-        <div className="fixed inset-0 z-100 lg:hidden">
+        <div className="fixed inset-0 z-[120] lg:hidden">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" onClick={() => setOpen(false)} />
           <nav className="absolute inset-y-0 left-0 flex w-[260px] animate-slide-in flex-col border-r border-border bg-[var(--bg-secondary)]">
             <div className="flex items-center justify-between border-b border-border px-3.5 py-3">

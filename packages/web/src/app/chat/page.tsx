@@ -23,7 +23,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import { ChevronLeft, Check, EllipsisVertical, Trash2 } from 'lucide-react'
+import { Check, EllipsisVertical, Trash2 } from 'lucide-react'
 
 function getOnboardingPrompt(portalName: string, userMessage: string) {
   return `This is your first time being activated. The user just set up ${portalName} and opened the web dashboard for the first time.
@@ -98,11 +98,17 @@ function ChatPage() {
     return false
   })
   const toggleSidebar = useCallback(() => {
-    setSidebarCollapsed((prev) => {
-      const next = !prev
-      localStorage.setItem('jinn-chat-sidebar-collapsed', String(next))
-      return next
-    })
+    // Mobile: toggle mobileView between sidebar and chat
+    const isMobile = window.innerWidth < 1024
+    if (isMobile) {
+      setMobileView((prev) => (prev === 'sidebar' ? 'chat' : 'sidebar'))
+    } else {
+      setSidebarCollapsed((prev) => {
+        const next = !prev
+        localStorage.setItem('jinn-chat-sidebar-collapsed', String(next))
+        return next
+      })
+    }
   }, [])
   const [viewMode, setViewMode] = useState<'chat' | 'cli'>('chat')
   const [showMoreMenu, setShowMoreMenu] = useState(false)
@@ -343,15 +349,6 @@ function ChatPage() {
   // Build toolbar actions to pass into tab bar (desktop only content)
   const toolbarActions = (
     <>
-      <button
-        className="flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium text-[var(--accent)] transition-colors hover:bg-accent lg:hidden"
-        onClick={() => setMobileView('sidebar')}
-        aria-label="Back to sessions"
-      >
-        <ChevronLeft className="size-4" />
-        Back
-      </button>
-
       {selectedId && (
         <div className="flex items-center gap-0.5 rounded-full bg-[var(--fill-tertiary)] p-0.5">
           <button
@@ -392,7 +389,7 @@ function ChatPage() {
 
   return (
     <PageLayout mobileHeaderActions={moreMenu}>
-      <div className="flex h-[calc(100%-48px)] overflow-hidden lg:h-full">
+      <div className="flex overflow-hidden h-full">
         <div
           className="hidden h-full shrink-0 overflow-hidden lg:block"
           style={{
@@ -412,26 +409,7 @@ function ChatPage() {
           </div>
         </div>
 
-        <div
-          className={mobileView === 'sidebar' ? 'block lg:hidden' : 'hidden'}
-          style={{ width: '100%', height: '100%' }}
-        >
-          <ChatSidebar
-            selectedId={selectedId}
-            onSelect={handleSelect}
-            onNewChat={handleNewChat}
-            onDelete={handleDeleteSession}
-            onSessionsLoaded={handleSessionsLoaded}
-            onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
-          />
-        </div>
-
-        <div
-          className={cn(
-            "min-w-0 flex-1 flex-col overflow-hidden bg-background",
-            mobileView === 'sidebar' ? 'hidden lg:flex' : 'flex'
-          )}
-        >
+        <div className="min-w-0 flex-1 flex-col overflow-hidden bg-background flex">
           <ChatTabBar
             tabs={chatTabs.tabs}
             activeIndex={chatTabs.activeIndex}
@@ -439,27 +417,45 @@ function ChatPage() {
             onClose={chatTabs.closeTab}
             onNew={handleNewChat}
             toolbarActions={toolbarActions}
-            sidebarCollapsed={sidebarCollapsed}
+            sidebarCollapsed={mobileView === 'chat' || sidebarCollapsed}
             onToggleSidebar={toggleSidebar}
           />
 
-          <ChatPane
-            sessionId={selectedId}
-            isActive={true}
-            onFocus={() => {}}
-            onSessionCreated={handleSessionCreated}
-            onSessionMetaChange={handleSessionMetaChange}
-            onRefresh={handleRefresh}
-            portalName={portalName}
-            subscribe={subscribe}
-            connectionSeq={connectionSeq}
-            skillsVersion={skillsVersion}
-            events={events}
-            viewMode={viewMode}
-            getOnboardingPrompt={stubSessionRef.current ? handleGetOnboardingPrompt : undefined}
-            isStubSession={stubSessionRef.current}
-            onStubCleared={handleStubCleared}
-          />
+          <div
+            className={mobileView === 'sidebar' ? 'flex-1 overflow-hidden lg:hidden' : 'hidden'}
+          >
+            <ChatSidebar
+              selectedId={selectedId}
+              onSelect={handleSelect}
+              onNewChat={handleNewChat}
+              onDelete={handleDeleteSession}
+              onSessionsLoaded={handleSessionsLoaded}
+              onEmployeeSessionsAvailable={handleEmployeeSessionsAvailable}
+            />
+          </div>
+
+          <div className={cn(
+            "flex-1 overflow-hidden flex flex-col",
+            mobileView === 'sidebar' ? 'hidden lg:flex' : 'flex'
+          )}>
+            <ChatPane
+              sessionId={selectedId}
+              isActive={true}
+              onFocus={() => {}}
+              onSessionCreated={handleSessionCreated}
+              onSessionMetaChange={handleSessionMetaChange}
+              onRefresh={handleRefresh}
+              portalName={portalName}
+              subscribe={subscribe}
+              connectionSeq={connectionSeq}
+              skillsVersion={skillsVersion}
+              events={events}
+              viewMode={viewMode}
+              getOnboardingPrompt={stubSessionRef.current ? handleGetOnboardingPrompt : undefined}
+              isStubSession={stubSessionRef.current}
+              onStubCleared={handleStubCleared}
+            />
+          </div>
         </div>
       </div>
 
