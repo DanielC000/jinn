@@ -698,10 +698,12 @@ export function ChatSidebar({
             <h2 className="text-xl font-bold tracking-[-0.03em] text-foreground">Chats</h2>
             <p className="text-xs text-muted-foreground">Sessions, employees, and cron runs</p>
           </div>
-          <Button size="sm" className="gap-1.5" onClick={onNewChat}>
-            <Plus className="size-3.5" />
-            New
-          </Button>
+          <div className="flex items-center gap-1.5">
+            <Button size="sm" className="gap-1.5" onClick={onNewChat}>
+              <Plus className="size-3.5" />
+              New
+            </Button>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] px-3 py-2">

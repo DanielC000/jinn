@@ -23,7 +23,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import { ChevronLeft, Check, EllipsisVertical, PanelLeftClose, PanelLeftOpen, Trash2 } from 'lucide-react'
+import { ChevronLeft, Check, EllipsisVertical, Trash2 } from 'lucide-react'
 
 function getOnboardingPrompt(portalName: string, userMessage: string) {
   return `This is your first time being activated. The user just set up ${portalName} and opened the web dashboard for the first time.
@@ -181,6 +181,7 @@ function ChatPage() {
     if (!selectedId || !sessionMeta) return
     chatTabs.updateTabStatus(selectedId, {
       label: sessionMeta.title || sessionMeta.employee || portalName,
+      employeeName: sessionMeta.employee || undefined,
     })
   }, [selectedId, sessionMeta, portalName, chatTabs])
 
@@ -411,14 +412,6 @@ function ChatPage() {
           </div>
         </div>
 
-        <button
-          onClick={toggleSidebar}
-          aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
-          className="hidden h-full w-5 shrink-0 items-center justify-center border-r border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground lg:flex"
-        >
-          {sidebarCollapsed ? <PanelLeftOpen className="size-3.5" /> : <PanelLeftClose className="size-3.5" />}
-        </button>
-
         <div
           className={mobileView === 'sidebar' ? 'block lg:hidden' : 'hidden'}
           style={{ width: '100%', height: '100%' }}
@@ -446,6 +439,8 @@ function ChatPage() {
             onClose={chatTabs.closeTab}
             onNew={handleNewChat}
             toolbarActions={toolbarActions}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={toggleSidebar}
           />
 
           <ChatPane

@@ -1,10 +1,11 @@
 "use client"
 
 import { useRef, type MouseEvent, type ReactNode } from 'react'
-import { X, Plus } from 'lucide-react'
+import { X, Plus, PanelLeftOpen, PanelLeftClose } from 'lucide-react'
 import { NotificationBell } from '@/components/notifications/notification-bell'
 import type { ChatTab } from '@/hooks/use-chat-tabs'
 import { cn } from '@/lib/utils'
+import { EmployeeAvatar } from '@/components/ui/employee-avatar'
 
 interface ChatTabBarProps {
   tabs: ChatTab[]
@@ -13,6 +14,8 @@ interface ChatTabBarProps {
   onClose: (index: number) => void
   onNew: () => void
   toolbarActions?: ReactNode
+  sidebarCollapsed?: boolean
+  onToggleSidebar?: () => void
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -21,7 +24,7 @@ const STATUS_COLORS: Record<string, string> = {
   idle: 'bg-zinc-500',
 }
 
-export function ChatTabBar({ tabs, activeIndex, onSwitch, onClose, onNew, toolbarActions }: ChatTabBarProps) {
+export function ChatTabBar({ tabs, activeIndex, onSwitch, onClose, onNew, toolbarActions, sidebarCollapsed, onToggleSidebar }: ChatTabBarProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const handleMiddleClick = (e: MouseEvent, index: number) => {
@@ -30,6 +33,15 @@ export function ChatTabBar({ tabs, activeIndex, onSwitch, onClose, onNew, toolba
 
   return (
     <div className="relative z-[100] flex h-10 shrink-0 items-center border-b border-border bg-[var(--bg-secondary)]">
+      {onToggleSidebar && (
+        <button
+          onClick={onToggleSidebar}
+          aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+          className="hidden size-10 shrink-0 items-center justify-center border-r border-border text-muted-foreground transition-colors hover:bg-[var(--fill-quaternary)] hover:text-foreground lg:flex"
+        >
+          {sidebarCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+        </button>
+      )}
       {tabs.length > 0 && (
         <div
           ref={scrollRef}
@@ -49,7 +61,7 @@ export function ChatTabBar({ tabs, activeIndex, onSwitch, onClose, onNew, toolba
               )}
             >
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_COLORS[tab.status] || STATUS_COLORS.idle}`} />
-              {tab.emoji && <span className="text-sm">{tab.emoji}</span>}
+              {tab.employeeName && <EmployeeAvatar name={tab.employeeName} size={16} />}
               <span className="truncate">{tab.label}</span>
               <span
                 onClick={(e) => { e.stopPropagation(); onClose(i) }}

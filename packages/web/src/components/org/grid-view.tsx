@@ -2,18 +2,12 @@
 
 import type { Employee } from "@/lib/api"
 import { Card, CardContent } from "@/components/ui/card"
+import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 
 interface GridViewProps {
   employees: Employee[]
   selectedName: string | null
   onSelect: (employee: Employee) => void
-}
-
-const RANK_EMOJI: Record<string, string> = {
-  executive: "\uD83C\uDFAF",
-  manager: "\uD83D\uDCCB",
-  senior: "\u2B50",
-  employee: "\uD83D\uDC64",
 }
 
 function EmployeeCard({
@@ -25,8 +19,6 @@ function EmployeeCard({
   selected: boolean
   onSelect: () => void
 }) {
-  const emoji = RANK_EMOJI[employee.rank] || RANK_EMOJI.employee
-
   return (
     <button
       onClick={onSelect}
@@ -37,9 +29,7 @@ function EmployeeCard({
           : "var(--shadow-subtle)",
       }}
     >
-      <span className="text-2xl leading-none shrink-0">
-        {emoji}
-      </span>
+      <EmployeeAvatar name={employee.name} size={28} />
       <div className="flex-1 min-w-0">
         <div className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] whitespace-nowrap overflow-hidden text-ellipsis leading-[var(--leading-tight)]">
           {employee.displayName || employee.name}
@@ -119,9 +109,7 @@ export function GridView({ employees, selectedName, onSelect }: GridViewProps) {
                 : "var(--shadow-card)",
           }}
         >
-          <span className="text-[40px] leading-none">
-            {RANK_EMOJI.executive}
-          </span>
+          <EmployeeAvatar name={executive.name} size={40} />
           <div className="flex-1 min-w-0">
             <div className="text-[length:var(--text-title2)] font-[var(--weight-bold)] text-[var(--text-primary)] tracking-[var(--tracking-tight)] leading-[var(--leading-tight)]">
               {executive.displayName || executive.name}

@@ -2,6 +2,8 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { Employee } from "@/lib/api";
+import { EmployeeAvatar, AvatarPreview, AVATAR_VARIANTS, type AvatarVariant } from "@/components/ui/employee-avatar";
+import { useSettings } from "@/app/settings-provider";
 
 interface SessionData {
   id: string;
@@ -11,13 +13,6 @@ interface SessionData {
   source?: string;
   [key: string]: unknown;
 }
-
-const RANK_EMOJI: Record<string, string> = {
-  executive: "\uD83C\uDFAF",
-  manager: "\uD83D\uDCCB",
-  senior: "\u2B50",
-  employee: "\uD83D\uDC64",
-};
 
 function RankBadge({ rank }: { rank: string }) {
   const colors: Record<string, { bg: string; text: string }> = {
@@ -56,6 +51,8 @@ export function EmployeeDetail({ name }: { name: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [personaExpanded, setPersonaExpanded] = useState(false);
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+  const { settings, setEmployeeOverride } = useSettings();
 
   useEffect(() => {
     setLoading(true);
@@ -96,8 +93,8 @@ export function EmployeeDetail({ name }: { name: string }) {
   if (!employee) return null;
 
   const rank = employee.rank || "employee";
-  const emoji = RANK_EMOJI[rank] || RANK_EMOJI.employee;
   const persona = employee.persona || "";
+  const currentVariant = (settings.employeeOverrides[employee.name]?.avatarVariant as AvatarVariant) ?? "beam";
   const truncatedPersona =
     persona.length > 200 && !personaExpanded
       ? persona.slice(0, 200) + "..."
@@ -109,7 +106,40 @@ export function EmployeeDetail({ name }: { name: string }) {
       <div className="rounded-[var(--radius-lg,16px)] border border-[var(--separator)] bg-[var(--material-regular)] p-[var(--space-6)]">
         <div className="flex items-start justify-between mb-[var(--space-4)]">
           <div className="flex items-center gap-[var(--space-3)]">
-            <span className="text-[28px] leading-none">{emoji}</span>
+            <div className="relative">
+              <EmployeeAvatar
+                name={employee.name}
+                size={36}
+                onClick={() => setShowAvatarPicker(!showAvatarPicker)}
+              />
+              {showAvatarPicker && (
+                <div
+                  className="absolute top-full left-0 z-50 mt-2 rounded-[var(--radius-lg,16px)] border border-[var(--separator)] bg-[var(--material-thick)] p-3 shadow-[var(--shadow-overlay)] backdrop-blur-xl"
+                  style={{ minWidth: 200 }}
+                >
+                  <p className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-2">
+                    Avatar Style
+                  </p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {AVATAR_VARIANTS.map((v) => (
+                      <button
+                        key={v}
+                        onClick={() => {
+                          setEmployeeOverride(employee.name, { avatarVariant: v });
+                          setShowAvatarPicker(false);
+                        }}
+                        className={`flex flex-col items-center gap-1 rounded-[var(--radius-md,12px)] p-2 transition-colors ${v === currentVariant ? "bg-[var(--accent-fill)] border border-[var(--accent)]" : "bg-transparent border border-transparent hover:bg-[var(--fill-secondary)]"}`}
+                      >
+                        <AvatarPreview name={employee.name} size={32} variant={v} />
+                        <span className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] capitalize">
+                          {v}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             <div>
               <h2 className="text-[length:var(--text-title2)] font-[var(--weight-bold)] tracking-[var(--tracking-tight)] text-[var(--text-primary)] m-0">
                 {employee.displayName || employee.name}

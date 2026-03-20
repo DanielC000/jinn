@@ -1,19 +1,12 @@
 "use client"
 import { Handle, Position, type NodeProps } from "@xyflow/react"
 import type { Employee } from "@/lib/api"
-
-const RANK_EMOJI: Record<string, string> = {
-  executive: "\uD83C\uDFAF",
-  manager: "\uD83D\uDCCB",
-  senior: "\u2B50",
-  employee: "\uD83D\uDC64",
-}
+import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 
 type EmployeeNodeData = Employee & Record<string, unknown>
 
 export function EmployeeNode({ data, selected }: NodeProps) {
   const employee = data as EmployeeNodeData
-  const emoji = RANK_EMOJI[employee.rank] || RANK_EMOJI.employee
 
   return (
     <div
@@ -25,11 +18,9 @@ export function EmployeeNode({ data, selected }: NodeProps) {
           : "var(--shadow-card)",
       }}
     >
-      {/* Emoji + Name row */}
+      {/* Avatar + Name row */}
       <div className="flex items-center gap-[var(--space-2)] mb-[var(--space-1)]">
-        <span className="text-[20px] leading-none shrink-0">
-          {emoji}
-        </span>
+        <EmployeeAvatar name={employee.name} size={24} />
         <div className="flex-1 min-w-0">
           <div className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)] whitespace-nowrap overflow-hidden text-ellipsis leading-[var(--leading-tight)]">
             {employee.displayName || employee.name}

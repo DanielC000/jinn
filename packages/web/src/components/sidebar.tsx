@@ -43,7 +43,7 @@ export function Sidebar() {
   const [instances, setInstances] = useState<Array<{ name: string; port: number; running: boolean; current: boolean }>>([])
   const [showSwitcher, setShowSwitcher] = useState(false)
 
-  const emoji = settings.portalEmoji ?? "\u{1F916}"
+  const emoji = settings.portalEmoji ?? "\u{1F9DE}"
   const portalName = settings.portalName ?? "Jinn"
 
   // Fetch available instances
@@ -66,8 +66,8 @@ export function Sidebar() {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       className={cn(
-        "fixed inset-y-0 left-0 z-[60] hidden overflow-hidden border-r border-border bg-[var(--bg-secondary)] transition-[width] duration-200 ease-out lg:flex lg:flex-col",
-        hovered ? "w-[200px]" : "w-14"
+        "fixed inset-y-0 left-0 hidden overflow-hidden border-r border-border bg-[var(--bg-secondary)] transition-[width,z-index] duration-200 ease-out lg:flex lg:flex-col",
+        hovered ? "z-[110] w-[200px]" : "z-[60] w-14"
       )}
     >
       <div className="flex min-h-14 shrink-0 items-center gap-2.5 px-3.5 pb-3 pt-4">

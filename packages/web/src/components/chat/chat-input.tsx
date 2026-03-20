@@ -6,6 +6,7 @@ import { MediaPreview } from './media-preview'
 import { useStt } from '@/hooks/use-stt'
 import { SttDownloadModal } from './stt-download-modal'
 import { SttWaveform } from './stt-waveform'
+import { EmployeeAvatar } from '@/components/ui/employee-avatar'
 
 interface Employee {
   name: string
@@ -439,7 +440,6 @@ export function ChatInput({
       {showMentions && filteredEmployees.length > 0 && (
         <div className="absolute bottom-full left-[var(--space-4)] right-[var(--space-4)] mb-1 bg-[var(--bg)] border border-[var(--separator)] rounded-[var(--radius-md)] shadow-[var(--shadow-lg)] max-h-40 overflow-y-auto z-10">
           {filteredEmployees.slice(0, 8).map((emp, idx) => {
-            const rankEmoji: Record<string, string> = { executive: '🎯', manager: '📋', senior: '⭐', employee: '👤' }
             const isHighlighted = idx === mentionIndex
             return (
               <button
@@ -452,7 +452,7 @@ export function ChatInput({
                 onClick={() => handleMentionSelect(emp.name)}
                 className={`w-full text-left py-[var(--space-2)] px-[var(--space-3)] text-[length:var(--text-footnote)] ${isHighlighted ? 'bg-[var(--fill-secondary)]' : 'bg-transparent'} border-none cursor-pointer flex items-center gap-[var(--space-2)] text-[var(--text-primary)]`}
               >
-                <span className="text-base leading-none">{rankEmoji[emp.rank || 'employee'] || '👤'}</span>
+                <EmployeeAvatar name={emp.name} size={20} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-[var(--space-2)]">
                     <span className="font-[var(--weight-semibold)]">{emp.displayName || emp.name}</span>

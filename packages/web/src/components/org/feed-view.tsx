@@ -2,18 +2,12 @@
 
 import type { Employee } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 
 interface FeedViewProps {
   employees: Employee[]
   selectedName: string | null
   onSelect: (employee: Employee) => void
-}
-
-const RANK_EMOJI: Record<string, string> = {
-  executive: "\uD83C\uDFAF",
-  manager: "\uD83D\uDCCB",
-  senior: "\u2B50",
-  employee: "\uD83D\uDC64",
 }
 
 function RankBadge({ rank }: { rank: string }) {
@@ -73,7 +67,7 @@ export function FeedView({ employees, selectedName, onSelect }: FeedViewProps) {
                 key={rank}
                 className="flex flex-1 items-center gap-[var(--space-3)] rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-[var(--material-regular)] px-[var(--space-4)] py-[var(--space-3)]"
               >
-                <span className="text-[20px]">{RANK_EMOJI[rank]}</span>
+                <EmployeeAvatar name={rank} size={20} />
                 <div>
                   <div className="text-[length:var(--text-title3)] font-[var(--weight-bold)] leading-none text-[var(--text-primary)]">
                     {count}
@@ -99,7 +93,6 @@ export function FeedView({ employees, selectedName, onSelect }: FeedViewProps) {
         <div className="overflow-hidden rounded-[var(--radius-lg,16px)] border border-[var(--separator)] bg-[var(--bg-secondary)]">
           {sorted.map((emp, idx) => {
             const isSelected = selectedName === emp.name
-            const emoji = RANK_EMOJI[emp.rank] || RANK_EMOJI.employee
 
             return (
               <button
@@ -111,7 +104,7 @@ export function FeedView({ employees, selectedName, onSelect }: FeedViewProps) {
                 )}
                 style={idx > 0 ? { borderTop: "1px solid var(--separator)" } : undefined}
               >
-                <span className="shrink-0 text-[20px] leading-none">{emoji}</span>
+                <EmployeeAvatar name={emp.name} size={24} />
 
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-[var(--space-2)]">
