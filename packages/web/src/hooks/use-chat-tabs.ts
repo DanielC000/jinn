@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 
 export interface ChatTab {
   sessionId: string
@@ -189,16 +189,25 @@ export function useChatTabs() {
   }, [])
 
   const updateTabStatus = useCallback((sessionId: string, updates: Partial<ChatTab>) => {
-    setState((current) => ({
-      ...current,
-      tabs: current.tabs.map((t) => (t.sessionId === sessionId ? { ...t, ...updates } : t)),
-    }))
+    setState((current) => {
+      const idx = current.tabs.findIndex((t) => t.sessionId === sessionId)
+      if (idx < 0) return current
+      const tab = current.tabs[idx]
+      // Bail out if nothing actually changed — prevents infinite re-render loops
+      const keys = Object.keys(updates) as (keyof ChatTab)[]
+      if (keys.every((k) => tab[k] === updates[k])) return current
+      const nextTabs = current.tabs.map((t, i) => (i === idx ? { ...t, ...updates } : t))
+      return { ...current, tabs: nextTabs }
+    })
   }, [])
 
-  return {
+  return useMemo(() => ({
     tabs, activeTab, activeIndex,
     openTab, closeTab, switchTab, nextTab, prevTab,
     pinTab, moveTab,
     clearActiveTab, saveDraft, loadDraft, updateTabStatus,
-  }
+  }), [tabs, activeTab, activeIndex,
+    openTab, closeTab, switchTab, nextTab, prevTab,
+    pinTab, moveTab,
+    clearActiveTab, saveDraft, loadDraft, updateTabStatus])
 }

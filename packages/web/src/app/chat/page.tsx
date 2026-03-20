@@ -183,13 +183,14 @@ function ChatPage() {
   }
 
   // Update tab label/status when session meta changes
+  const { updateTabStatus } = chatTabs
   useEffect(() => {
     if (!selectedId || !sessionMeta) return
-    chatTabs.updateTabStatus(selectedId, {
+    updateTabStatus(selectedId, {
       label: sessionMeta.title || sessionMeta.employee || portalName,
       employeeName: sessionMeta.employee || undefined,
     })
-  }, [selectedId, sessionMeta, portalName, chatTabs])
+  }, [selectedId, sessionMeta, portalName, updateTabStatus])
 
   const handleEmployeeSessionsAvailable = useCallback(
     (sessions: Array<{ id: string; title?: string; lastActivity?: string; createdAt?: string }>) => {
