@@ -9,6 +9,7 @@ import { useTheme } from "@/app/providers"
 import { THEMES } from "@/lib/themes"
 import type { ThemeId } from "@/lib/themes"
 import { api } from "@/lib/api"
+import { EmojiPicker } from "@/components/ui/emoji-picker"
 
 // ---------------------------------------------------------------------------
 // Accent color presets
@@ -429,6 +430,7 @@ export default function SettingsPage() {
   const [emojiValue, setEmojiValue] = useState(settings.portalEmoji ?? "")
   const [languageValue, setLanguageValue] = useState(settings.language ?? "English")
   const [customHex, setCustomHex] = useState(settings.accentColor ?? "")
+  const [showCooEmojiPicker, setShowCooEmojiPicker] = useState(false)
 
   // Gateway config state
   const [config, setConfig] = useState<Config>({})
@@ -677,6 +679,41 @@ export default function SettingsPage() {
             </div>
           </Section>
 
+          {/* -- COO Emoji -- */}
+          <Section title="COO Emoji">
+            <div>
+              <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mb-[var(--space-3)]">
+                Choose an emoji for the COO shown in the sidebar.
+              </div>
+              <div className="relative flex items-center gap-[var(--space-4)]">
+                <button
+                  onClick={() => setShowCooEmojiPicker(!showCooEmojiPicker)}
+                  className="text-4xl cursor-pointer bg-transparent border-none p-0"
+                >
+                  {settings.portalEmoji ?? "\u{1F9DE}"}
+                </button>
+                <div>
+                  <div className="text-[length:var(--text-body)] font-[var(--weight-semibold)] text-[var(--text-primary)]">
+                    {settings.operatorName || "Jimbo"}
+                  </div>
+                  <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)]">
+                    Click emoji to change
+                  </div>
+                </div>
+                {showCooEmojiPicker && (
+                  <EmojiPicker
+                    current={settings.portalEmoji ?? "\u{1F9DE}"}
+                    onSelect={(emoji) => {
+                      setPortalEmoji(emoji)
+                      setShowCooEmojiPicker(false)
+                    }}
+                    onClose={() => setShowCooEmojiPicker(false)}
+                  />
+                )}
+              </div>
+            </div>
+          </Section>
+
           {/* -- Section 2: Branding -- */}
           <Section title="Branding">
             <div
@@ -745,7 +782,7 @@ export default function SettingsPage() {
                 <input
                   type="text"
                   className="apple-input w-[80px] text-center text-[length:var(--text-title2)] px-[8px] py-[6px] bg-[var(--bg-secondary)] border border-[var(--separator)] rounded-[var(--radius-sm)]"
-                  placeholder="\ud83e\udd16"
+                  placeholder="\ud83e\uddde"
                   value={emojiValue}
                   onChange={(e) => setEmojiValue(e.target.value)}
                   onBlur={() => setPortalEmoji(emojiValue || null)}

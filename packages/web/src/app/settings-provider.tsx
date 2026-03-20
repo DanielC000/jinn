@@ -29,7 +29,6 @@ interface SettingsContextValue {
   setEmojiOnly: (emojiOnly: boolean) => void
   setOperatorName: (name: string | null) => void
   setLanguage: (language: string) => void
-  setCooAvatarVariant: (variant: string | null) => void
   setEmployeeOverride: (employeeId: string, override: EmployeeOverride) => void
   clearEmployeeOverride: (employeeId: string) => void
   getEmployeeDisplay: (employee: { name: string; emoji: string; id: string }) => EmployeeDisplay
@@ -37,7 +36,7 @@ interface SettingsContextValue {
 }
 
 const SettingsContext = createContext<SettingsContextValue>({
-  settings: { accentColor: null, portalName: null, portalSubtitle: null, portalEmoji: null, portalIcon: null, iconBgHidden: false, emojiOnly: false, operatorName: null, language: "English", cooAvatarVariant: null, employeeOverrides: {} },
+  settings: { accentColor: null, portalName: null, portalSubtitle: null, portalEmoji: null, portalIcon: null, iconBgHidden: false, emojiOnly: false, operatorName: null, language: "English", employeeOverrides: {} },
   setAccentColor: () => {},
   setPortalName: () => {},
   setPortalSubtitle: () => {},
@@ -47,7 +46,6 @@ const SettingsContext = createContext<SettingsContextValue>({
   setEmojiOnly: () => {},
   setOperatorName: () => {},
   setLanguage: () => {},
-  setCooAvatarVariant: () => {},
   setEmployeeOverride: () => {},
   clearEmployeeOverride: () => {},
   getEmployeeDisplay: (employee) => ({ emoji: employee.emoji }),
@@ -168,13 +166,6 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     [update],
   )
 
-  const setCooAvatarVariant = useCallback(
-    (variant: string | null) => {
-      update((prev) => ({ ...prev, cooAvatarVariant: variant }))
-    },
-    [update],
-  )
-
   const setEmployeeOverride = useCallback(
     (employeeId: string, override: EmployeeOverride) => {
       update((prev) => {
@@ -224,7 +215,6 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       emojiOnly: false,
       operatorName: null,
       language: "English",
-      cooAvatarVariant: null,
       employeeOverrides: {},
     }))
   }, [update])
@@ -242,7 +232,6 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         setEmojiOnly,
         setOperatorName,
         setLanguage,
-        setCooAvatarVariant,
         setEmployeeOverride,
         clearEmployeeOverride,
         getEmployeeDisplay,

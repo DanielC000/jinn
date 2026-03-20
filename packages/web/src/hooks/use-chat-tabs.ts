@@ -9,6 +9,8 @@ export interface ChatTab {
   employeeName?: string // Employee name for avatar generation
   status: 'idle' | 'running' | 'error'
   unread: boolean
+  /** If true, this is a "pinned" tab (VS Code style) — won't be replaced by preview. */
+  pinned?: boolean
 }
 
 const STORAGE_KEY = 'jinn-chat-tabs'
@@ -53,18 +55,37 @@ export function useChatTabs() {
 
   const activeTab = activeIndex >= 0 ? tabs[activeIndex] : null
 
+  /**
+   * Open a tab in "preview" mode (VS Code style):
+   * - If the session is already open, just switch to it.
+   * - If there's an existing unpinned preview tab, replace it.
+   * - Otherwise, append a new preview tab.
+   * The `pinned` field on the incoming tab is respected — if true, it opens pinned.
+   */
   const openTab = useCallback((tab: ChatTab) => {
     setState((current) => {
+      // Already open? Just switch to it
       const existing = current.tabs.findIndex((t) => t.sessionId === tab.sessionId)
       if (existing >= 0) {
         const nextTabs = current.tabs.map((existingTab, index) =>
-          index === existing ? { ...existingTab, ...tab } : existingTab
+          index === existing ? { ...existingTab, ...tab, pinned: existingTab.pinned || tab.pinned } : existingTab
         )
         return { tabs: nextTabs, activeIndex: existing }
       }
 
+      // If incoming tab is not explicitly pinned, replace the existing preview tab
+      if (!tab.pinned) {
+        const previewIdx = current.tabs.findIndex((t) => !t.pinned)
+        if (previewIdx >= 0) {
+          const nextTabs = [...current.tabs]
+          nextTabs[previewIdx] = { ...tab, pinned: false }
+          return { tabs: nextTabs, activeIndex: previewIdx }
+        }
+      }
+
       if (current.tabs.length >= MAX_TABS) {
-        const replaceIdx = current.tabs.findIndex((_, index) => index !== current.activeIndex)
+        // Replace oldest unpinned tab
+        const replaceIdx = current.tabs.findIndex((t) => !t.pinned)
         if (replaceIdx >= 0) {
           const nextTabs = [...current.tabs]
           nextTabs[replaceIdx] = tab
@@ -76,6 +97,16 @@ export function useChatTabs() {
         tabs: [...current.tabs, tab],
         activeIndex: current.tabs.length,
       }
+    })
+  }, [])
+
+  /** Pin the tab at the given index (VS Code style — makes it permanent). */
+  const pinTab = useCallback((index: number) => {
+    setState((current) => {
+      if (index < 0 || index >= current.tabs.length) return current
+      if (current.tabs[index].pinned) return current
+      const nextTabs = current.tabs.map((t, i) => i === index ? { ...t, pinned: true } : t)
+      return { ...current, tabs: nextTabs }
     })
   }, [])
 
@@ -101,6 +132,31 @@ export function useChatTabs() {
       return { ...current, activeIndex: index }
     })
   }, [tabs.length])
+
+  /** Move a tab from one position to another (for drag & drop reordering). */
+  const moveTab = useCallback((from: number, to: number) => {
+    setState((current) => {
+      if (from === to) return current
+      if (from < 0 || from >= current.tabs.length) return current
+      if (to < 0 || to >= current.tabs.length) return current
+
+      const nextTabs = [...current.tabs]
+      const [moved] = nextTabs.splice(from, 1)
+      nextTabs.splice(to, 0, moved)
+
+      // Keep activeIndex pointing to the same tab
+      let nextActive = current.activeIndex
+      if (current.activeIndex === from) {
+        nextActive = to
+      } else if (from < current.activeIndex && to >= current.activeIndex) {
+        nextActive = current.activeIndex - 1
+      } else if (from > current.activeIndex && to <= current.activeIndex) {
+        nextActive = current.activeIndex + 1
+      }
+
+      return { tabs: nextTabs, activeIndex: nextActive }
+    })
+  }, [])
 
   const nextTab = useCallback(() => {
     setState((current) => {
@@ -142,6 +198,7 @@ export function useChatTabs() {
   return {
     tabs, activeTab, activeIndex,
     openTab, closeTab, switchTab, nextTab, prevTab,
+    pinTab, moveTab,
     clearActiveTab, saveDraft, loadDraft, updateTabStatus,
   }
 }

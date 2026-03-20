@@ -2,8 +2,10 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { Employee } from "@/lib/api";
-import { EmployeeAvatar, AvatarPreview, AVATAR_VARIANTS, type AvatarVariant } from "@/components/ui/employee-avatar";
+import { EmployeeAvatar } from "@/components/ui/employee-avatar";
 import { useSettings } from "@/app/settings-provider";
+import { emojiForName } from "@/lib/emoji-pool";
+import { EmojiPicker } from "@/components/ui/emoji-picker";
 
 interface SessionData {
   id: string;
@@ -45,19 +47,36 @@ function RankBadge({ rank }: { rank: string }) {
   );
 }
 
-export function EmployeeDetail({ name }: { name: string }) {
-  const [employee, setEmployee] = useState<Employee | null>(null);
+export function EmployeeDetail({ name, prefetched }: { name: string; prefetched?: Employee }) {
+  const [employee, setEmployee] = useState<Employee | null>(prefetched ?? null);
   const [sessions, setSessions] = useState<SessionData[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!prefetched);
   const [error, setError] = useState<string | null>(null);
   const [personaExpanded, setPersonaExpanded] = useState(false);
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const { settings, setEmployeeOverride } = useSettings();
 
   useEffect(() => {
+    setPersonaExpanded(false);
+
+    if (prefetched) {
+      setEmployee(prefetched);
+      setLoading(true);
+      setError(null);
+      api.getSessions()
+        .then((allSessions) => {
+          const empSessions = (allSessions as SessionData[]).filter(
+            (s) => s.employee === name || (!s.employee && name === prefetched.name),
+          );
+          setSessions(empSessions.slice(0, 10));
+        })
+        .catch(() => setSessions([]))
+        .finally(() => setLoading(false));
+      return;
+    }
+
     setLoading(true);
     setError(null);
-    setPersonaExpanded(false);
 
     Promise.all([api.getEmployee(name), api.getSessions()])
       .then(([emp, allSessions]) => {
@@ -69,7 +88,7 @@ export function EmployeeDetail({ name }: { name: string }) {
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [name]);
+  }, [name, prefetched]);
 
   if (loading) {
     return (
@@ -94,7 +113,7 @@ export function EmployeeDetail({ name }: { name: string }) {
 
   const rank = employee.rank || "employee";
   const persona = employee.persona || "";
-  const currentVariant = (settings.employeeOverrides[employee.name]?.avatarVariant as AvatarVariant) ?? "beam";
+  const currentEmoji = settings.employeeOverrides[employee.name]?.emoji || emojiForName(employee.name);
   const truncatedPersona =
     persona.length > 200 && !personaExpanded
       ? persona.slice(0, 200) + "..."
@@ -113,31 +132,14 @@ export function EmployeeDetail({ name }: { name: string }) {
                 onClick={() => setShowAvatarPicker(!showAvatarPicker)}
               />
               {showAvatarPicker && (
-                <div
-                  className="absolute top-full left-0 z-50 mt-2 rounded-[var(--radius-lg,16px)] border border-[var(--separator)] bg-[var(--material-thick)] p-3 shadow-[var(--shadow-overlay)] backdrop-blur-xl"
-                  style={{ minWidth: 200 }}
-                >
-                  <p className="text-[length:var(--text-caption2)] font-[var(--weight-semibold)] uppercase tracking-[var(--tracking-wide)] text-[var(--text-tertiary)] mb-2">
-                    Avatar Style
-                  </p>
-                  <div className="grid grid-cols-3 gap-2">
-                    {AVATAR_VARIANTS.map((v) => (
-                      <button
-                        key={v}
-                        onClick={() => {
-                          setEmployeeOverride(employee.name, { avatarVariant: v });
-                          setShowAvatarPicker(false);
-                        }}
-                        className={`flex flex-col items-center gap-1 rounded-[var(--radius-md,12px)] p-2 transition-colors ${v === currentVariant ? "bg-[var(--accent-fill)] border border-[var(--accent)]" : "bg-transparent border border-transparent hover:bg-[var(--fill-secondary)]"}`}
-                      >
-                        <AvatarPreview name={employee.name} size={32} variant={v} />
-                        <span className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] capitalize">
-                          {v}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <EmojiPicker
+                  current={currentEmoji}
+                  onSelect={(emoji) => {
+                    setEmployeeOverride(employee.name, { emoji: emoji === emojiForName(employee.name) ? undefined : emoji });
+                    setShowAvatarPicker(false);
+                  }}
+                  onClose={() => setShowAvatarPicker(false)}
+                />
               )}
             </div>
             <div>

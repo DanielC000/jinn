@@ -30,10 +30,28 @@ describe('useChatTabs', () => {
     expect(result.current.tabs).toHaveLength(1)
   })
 
-  it('closes a tab and adjusts active index', () => {
+  it('preview tab replaces previous preview tab', () => {
     const { result } = renderHook(() => useChatTabs())
     act(() => result.current.openTab({ sessionId: 's1', label: 'A', status: 'idle', unread: false }))
     act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false }))
+    // s2 should have replaced s1 since both are unpinned (preview)
+    expect(result.current.tabs).toHaveLength(1)
+    expect(result.current.tabs[0].sessionId).toBe('s2')
+  })
+
+  it('pinned tabs are not replaced by preview tabs', () => {
+    const { result } = renderHook(() => useChatTabs())
+    act(() => result.current.openTab({ sessionId: 's1', label: 'A', status: 'idle', unread: false, pinned: true }))
+    act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false }))
+    expect(result.current.tabs).toHaveLength(2)
+    expect(result.current.tabs[0].sessionId).toBe('s1')
+    expect(result.current.tabs[1].sessionId).toBe('s2')
+  })
+
+  it('closes a tab and adjusts active index', () => {
+    const { result } = renderHook(() => useChatTabs())
+    act(() => result.current.openTab({ sessionId: 's1', label: 'A', status: 'idle', unread: false, pinned: true }))
+    act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false, pinned: true }))
     act(() => result.current.closeTab(0))
     expect(result.current.tabs).toHaveLength(1)
     expect(result.current.tabs[0].sessionId).toBe('s2')
@@ -41,8 +59,8 @@ describe('useChatTabs', () => {
 
   it('clears the active tab without dropping open tabs', () => {
     const { result } = renderHook(() => useChatTabs())
-    act(() => result.current.openTab({ sessionId: 's1', label: 'A', status: 'idle', unread: false }))
-    act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false }))
+    act(() => result.current.openTab({ sessionId: 's1', label: 'A', status: 'idle', unread: false, pinned: true }))
+    act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false, pinned: true }))
     act(() => result.current.clearActiveTab())
     expect(result.current.tabs).toHaveLength(2)
     expect(result.current.activeTab).toBeNull()
@@ -56,5 +74,22 @@ describe('useChatTabs', () => {
     expect(result.current.tabs).toHaveLength(0)
     expect(result.current.activeTab).toBeNull()
     expect(result.current.activeIndex).toBe(-1)
+  })
+
+  it('pinTab converts preview tab to pinned', () => {
+    const { result } = renderHook(() => useChatTabs())
+    act(() => result.current.openTab({ sessionId: 's1', label: 'A', status: 'idle', unread: false }))
+    expect(result.current.tabs[0].pinned).toBeFalsy()
+    act(() => result.current.pinTab(0))
+    expect(result.current.tabs[0].pinned).toBe(true)
+  })
+
+  it('moveTab reorders tabs', () => {
+    const { result } = renderHook(() => useChatTabs())
+    act(() => result.current.openTab({ sessionId: 's1', label: 'A', status: 'idle', unread: false, pinned: true }))
+    act(() => result.current.openTab({ sessionId: 's2', label: 'B', status: 'idle', unread: false, pinned: true }))
+    act(() => result.current.openTab({ sessionId: 's3', label: 'C', status: 'idle', unread: false, pinned: true }))
+    act(() => result.current.moveTab(0, 2))
+    expect(result.current.tabs.map(t => t.sessionId)).toEqual(['s2', 's3', 's1'])
   })
 })

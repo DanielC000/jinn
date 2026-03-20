@@ -3,7 +3,9 @@
 import { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
 import { ChevronDown, Clock3, EllipsisVertical, Pin, Plus, Search, Trash2, X } from "lucide-react"
 import { api, type Employee } from "@/lib/api"
+import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 import { useSettings } from "@/app/settings-provider"
+import { cleanPreview } from "@/lib/clean-preview"
 import { useSessions, useDeleteSession, useBulkDeleteSessions } from "@/hooks/use-sessions"
 import {
   ContextMenu,
@@ -136,6 +138,10 @@ function saveExpandedState(expanded: Record<string, boolean>) {
   try {
     localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify(expanded))
   } catch {}
+}
+
+function titleCase(slug: string): string {
+  return slug.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
 }
 
 function isCronSession(session: Session): boolean {
@@ -283,7 +289,21 @@ export function ChatSidebar({
     }
   }, [selectedId])
 
-  // Employee detail endpoint doesn't exist on current gateway — skip fetching
+  // Fetch employee display names from org API
+  useEffect(() => {
+    api.getOrg().then(async (org) => {
+      const map = new Map<string, Employee>()
+      await Promise.all(
+        org.employees.map(async (name: string) => {
+          try {
+            const emp = await api.getEmployee(name)
+            map.set(name, emp)
+          } catch { /* skip */ }
+        }),
+      )
+      setEmployeeData(map)
+    }).catch(() => { /* best-effort */ })
+  }, [])
 
   const toggleCronCollapsed = useCallback(() => {
     setCollapsed((prev) => {
@@ -493,7 +513,7 @@ export function ChatSidebar({
                 sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
               )}
             >
-              {sessionTitle || "Untitled"}
+              {cleanPreview(sessionTitle) || "Untitled"}
             </span>
             {isPinned ? (
               <Pin className={cn("size-3 shrink-0 text-[var(--accent)]", isHovered && "hidden lg:hidden")} />
@@ -552,8 +572,7 @@ export function ChatSidebar({
     const empSessions = item.sessions!
     const latestSession = empSessions[0]
     const empInfo = item.employeeData
-    const displayName = empInfo?.displayName || empName
-    const emoji = empInfo?.emoji || "\u{1F916}"
+    const displayName = empInfo?.displayName || titleCase(empName)
     const department = empInfo?.department || ""
     const timeLabel = formatTime(getSessionActivity(latestSession))
     const dotColor = getStatusDotColor(latestSession, readSessions)
@@ -582,8 +601,8 @@ export function ChatSidebar({
                   : "border-l-transparent hover:bg-accent"
               )}
             >
-              <div className="relative flex size-9 shrink-0 items-center justify-center rounded-full bg-[var(--fill-secondary)] text-lg">
-                {emoji}
+              <div className="relative flex size-9 shrink-0 items-center justify-center">
+                <EmployeeAvatar name={empName} size={36} />
                 <StatusDot
                   color={dotColor}
                   pulse={pulse}
@@ -688,8 +707,6 @@ export function ChatSidebar({
     )
   }
 
-  const hasPinnedItems = pinnedFlat.length > 0
-
   return (
     <div className="flex h-full flex-col border-r border-border bg-[var(--sidebar-bg)]">
       <div className="shrink-0 border-b border-border bg-[var(--material-thick)] px-4 pb-3 pt-4">
@@ -739,14 +756,7 @@ export function ChatSidebar({
           </div>
         ) : (
           <>
-            {hasPinnedItems ? (
-              <>
-                <SectionLabel icon={"\u{1F4CC}"} label="Pinned" />
-                {pinnedFlat.map((item) => renderEmployeeItem(item))}
-                {unpinnedFlat.length > 0 ? <div className="mx-4 my-2 border-t border-border" /> : null}
-              </>
-            ) : null}
-
+            {pinnedFlat.map((item) => renderEmployeeItem(item))}
             {unpinnedFlat.map((item) => renderEmployeeItem(item))}
 
             {cronSessions.length > 0 ? (

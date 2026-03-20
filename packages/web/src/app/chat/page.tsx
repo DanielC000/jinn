@@ -244,7 +244,7 @@ function ChatPage() {
   // ChatPane callbacks
   const handleSessionCreated = useCallback((newId: string) => {
     setSelectedId(newId)
-    chatTabs.openTab({ sessionId: newId, label: 'New Chat', status: 'running', unread: false })
+    chatTabs.openTab({ sessionId: newId, label: 'New Chat', status: 'running', unread: false, pinned: true })
     qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
   }, [chatTabs, qc])
 
@@ -416,6 +416,8 @@ function ChatPage() {
             onSwitch={chatTabs.switchTab}
             onClose={chatTabs.closeTab}
             onNew={handleNewChat}
+            onPin={chatTabs.pinTab}
+            onMove={chatTabs.moveTab}
             toolbarActions={toolbarActions}
             sidebarCollapsed={mobileView === 'chat' || sidebarCollapsed}
             onToggleSidebar={toggleSidebar}

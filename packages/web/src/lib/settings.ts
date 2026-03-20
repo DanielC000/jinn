@@ -1,8 +1,6 @@
 export interface EmployeeOverride {
   emoji?: string
   profileImage?: string
-  avatarVariant?: string
-  avatarColors?: string[]
 }
 
 export interface JinnSettings {
@@ -15,7 +13,6 @@ export interface JinnSettings {
   emojiOnly: boolean
   operatorName: string | null
   language: string
-  cooAvatarVariant: string | null
   employeeOverrides: Record<string, EmployeeOverride>
 }
 
@@ -29,7 +26,6 @@ export const DEFAULTS: JinnSettings = {
   emojiOnly: false,
   operatorName: null,
   language: "English",
-  cooAvatarVariant: null,
   employeeOverrides: {},
 }
 

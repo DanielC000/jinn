@@ -4,6 +4,13 @@ import type { Employee } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 
+const RANK_EMOJI: Record<string, string> = {
+  executive: "\u{1F451}",
+  manager: "\u{1F4BC}",
+  senior: "\u{2B50}",
+  employee: "\u{1F464}",
+}
+
 interface FeedViewProps {
   employees: Employee[]
   selectedName: string | null
@@ -67,7 +74,7 @@ export function FeedView({ employees, selectedName, onSelect }: FeedViewProps) {
                 key={rank}
                 className="flex flex-1 items-center gap-[var(--space-3)] rounded-[var(--radius-md,12px)] border border-[var(--separator)] bg-[var(--material-regular)] px-[var(--space-4)] py-[var(--space-3)]"
               >
-                <EmployeeAvatar name={rank} size={20} />
+                <span className="text-base">{RANK_EMOJI[rank] || "\u{1F464}"}</span>
                 <div>
                   <div className="text-[length:var(--text-title3)] font-[var(--weight-bold)] leading-none text-[var(--text-primary)]">
                     {count}

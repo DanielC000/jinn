@@ -205,7 +205,10 @@ export default function OrgPage() {
 
               {/* Employee detail */}
               <div className="px-[var(--space-4)] pb-[var(--space-6)]">
-                <EmployeeDetail name={selected.name} />
+                <EmployeeDetail
+                  name={selected.name}
+                  prefetched={selected.rank === "executive" ? selected : undefined}
+                />
               </div>
             </div>
           </div>

@@ -1,26 +1,11 @@
 "use client"
 
-import Avatar from "boring-avatars"
 import { useSettings } from "@/app/settings-provider"
-
-export const AVATAR_VARIANTS = [
-  "beam",
-  "marble",
-  "pixel",
-  "sunset",
-  "bauhaus",
-  "ring",
-] as const
-
-export type AvatarVariant = (typeof AVATAR_VARIANTS)[number]
-
-const DEFAULT_COLORS = ["#264653", "#2a9d8f", "#e9c46a", "#f4a261", "#e76f51"]
+import { emojiForName } from "@/lib/emoji-pool"
 
 interface EmployeeAvatarProps {
   name: string
   size?: number
-  variant?: AvatarVariant
-  colors?: string[]
   className?: string
   onClick?: () => void
 }
@@ -28,53 +13,69 @@ interface EmployeeAvatarProps {
 export function EmployeeAvatar({
   name,
   size = 32,
-  variant,
-  colors,
   className,
   onClick,
 }: EmployeeAvatarProps) {
   const { settings } = useSettings()
   const override = settings.employeeOverrides[name]
-  const resolvedVariant = variant ?? (override?.avatarVariant as AvatarVariant) ?? "beam"
-  const resolvedColors = colors ?? override?.avatarColors ?? DEFAULT_COLORS
+  const emoji = override?.emoji || emojiForName(name)
+  const fontSize = Math.round(size * 0.6)
 
   return (
     <span
       className={className}
       onClick={onClick}
-      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", borderRadius: "50%", overflow: "hidden", flexShrink: 0, width: size, height: size, cursor: onClick ? "pointer" : undefined }}
+      role={onClick ? "button" : undefined}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: size,
+        height: size,
+        fontSize,
+        lineHeight: 1,
+        borderRadius: "50%",
+        flexShrink: 0,
+        cursor: onClick ? "pointer" : undefined,
+        userSelect: "none",
+      }}
     >
-      <Avatar
-        name={name}
-        size={size}
-        variant={resolvedVariant}
-        colors={resolvedColors}
-      />
+      {emoji}
     </span>
   )
 }
 
-/** Standalone avatar preview without settings context (for pickers) */
+/** Standalone avatar preview without settings context (for pickers / settings page) */
 export function AvatarPreview({
   name,
   size = 32,
-  variant = "beam",
-  colors = DEFAULT_COLORS,
   className,
   onClick,
-}: EmployeeAvatarProps) {
+  emoji: overrideEmoji,
+}: EmployeeAvatarProps & { emoji?: string }) {
+  const emoji = overrideEmoji || emojiForName(name)
+  const fontSize = Math.round(size * 0.6)
+
   return (
     <span
       className={className}
       onClick={onClick}
-      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", borderRadius: "50%", overflow: "hidden", flexShrink: 0, width: size, height: size, cursor: onClick ? "pointer" : undefined }}
+      role={onClick ? "button" : undefined}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: size,
+        height: size,
+        fontSize,
+        lineHeight: 1,
+        borderRadius: "50%",
+        flexShrink: 0,
+        cursor: onClick ? "pointer" : undefined,
+        userSelect: "none",
+      }}
     >
-      <Avatar
-        name={name}
-        size={size}
-        variant={variant}
-        colors={colors}
-      />
+      {emoji}
     </span>
   )
 }
