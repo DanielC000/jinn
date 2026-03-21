@@ -881,6 +881,21 @@ export async function handleApiRequest(
       return json(res, content);
     }
 
+    // PATCH /api/org/employees/:name — update employee fields (currently only alwaysNotify)
+    params = matchRoute("/api/org/employees/:name", pathname);
+    if (method === "PATCH" && params) {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as any;
+      const { updateEmployeeYaml } = await import("./org.js");
+      const updated = updateEmployeeYaml(params.name, {
+        alwaysNotify: typeof body.alwaysNotify === "boolean" ? body.alwaysNotify : undefined,
+      });
+      if (!updated) return notFound(res);
+      context.emit("org:updated", { employee: params.name });
+      return json(res, { status: "ok" });
+    }
+
     // GET /api/org/departments/:name/board
     params = matchRoute("/api/org/departments/:name/board", pathname);
     if (method === "GET" && params) {
