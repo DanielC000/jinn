@@ -1831,15 +1831,16 @@ async function runWebSession(
     });
   }
 
+  // If this session has an assigned employee, load their persona
+  let employee: import("../shared/types.js").Employee | undefined;
+  if (currentSession.employee) {
+    const { findEmployee } = await import("./org.js");
+    const { scanOrg } = await import("./org.js");
+    const registry = scanOrg();
+    employee = findEmployee(currentSession.employee, registry);
+  }
+
   try {
-    // If this session has an assigned employee, load their persona
-    let employee: import("../shared/types.js").Employee | undefined;
-    if (currentSession.employee) {
-      const { findEmployee } = await import("./org.js");
-      const { scanOrg } = await import("./org.js");
-      const registry = scanOrg();
-      employee = findEmployee(currentSession.employee, registry);
-    }
 
     const systemPrompt = buildContext({
       source: "web",
