@@ -44,6 +44,8 @@ interface ChatInputProps {
   droppedFiles?: File[]
   /** Called after droppedFiles have been consumed as pending attachments */
   onDroppedFilesConsumed?: () => void
+  /** Incrementing counter that triggers textarea focus when changed */
+  focusTrigger?: number
 }
 
 /* ── File to MediaAttachment ─────────────────────────────── */
@@ -114,6 +116,7 @@ export function ChatInput({
   events,
   droppedFiles,
   onDroppedFilesConsumed,
+  focusTrigger,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [employees, setEmployees] = useState<Employee[]>([])
@@ -127,6 +130,13 @@ export function ChatInput({
   const [pendingAttachments, setPendingAttachments] = useState<MediaAttachment[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Focus textarea when focusTrigger changes (e.g. "+ New" chat button clicked)
+  useEffect(() => {
+    if (focusTrigger && focusTrigger > 0) {
+      textareaRef.current?.focus()
+    }
+  }, [focusTrigger])
   const mentionItemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
 
   const stt = useStt(events, (text) => {
