@@ -115,6 +115,7 @@ function ChatPage() {
   const [showSessionPicker, setShowSessionPicker] = useState(false)
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [focusTrigger, setFocusTrigger] = useState(0)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const sessionPickerRef = useRef<HTMLDivElement>(null)
   const { events, connectionSeq, skillsVersion, subscribe } = useGateway()
@@ -219,6 +220,7 @@ function ChatPage() {
     setMobileView('chat')
     setEmployeeSessions([])
     chatTabs.clearActiveTab()
+    setFocusTrigger(prev => prev + 1)
   }, [chatTabs])
 
   const handleSessionsLoaded = useCallback(
@@ -457,6 +459,7 @@ function ChatPage() {
               getOnboardingPrompt={stubSessionRef.current ? handleGetOnboardingPrompt : undefined}
               isStubSession={stubSessionRef.current}
               onStubCleared={handleStubCleared}
+              focusTrigger={focusTrigger}
             />
           </div>
         </div>

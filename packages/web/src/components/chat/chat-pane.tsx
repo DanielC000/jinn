@@ -39,6 +39,8 @@ interface ChatPaneProps {
   isStubSession?: boolean
   /** Callback to clear stub status */
   onStubCleared?: () => void
+  /** Incrementing counter that triggers input focus */
+  focusTrigger?: number
 }
 
 export function ChatPane({
@@ -57,6 +59,7 @@ export function ChatPane({
   getOnboardingPrompt,
   isStubSession,
   onStubCleared,
+  focusTrigger,
 }: ChatPaneProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
@@ -569,6 +572,7 @@ export function ChatPane({
           events={events}
           droppedFiles={droppedFiles}
           onDroppedFilesConsumed={() => setDroppedFiles(undefined)}
+          focusTrigger={focusTrigger}
         />
       )}
     </div>
