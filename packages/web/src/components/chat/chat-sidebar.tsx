@@ -544,7 +544,6 @@ export function ChatSidebar({
               />
             ) : (
               <span
-                onDoubleClick={(e) => { e.stopPropagation(); setRenamingSessionId(session.id) }}
                 className={cn(
                   "min-w-0 flex-1 truncate text-xs",
                   sessionIsActive ? "font-semibold text-foreground" : "text-[var(--text-secondary)]"
