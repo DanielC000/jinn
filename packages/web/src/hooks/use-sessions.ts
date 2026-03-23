@@ -48,6 +48,7 @@ export function useUpdateSession() {
     mutationFn: ({ id, data }: { id: string; data: { title?: string } }) =>
       api.updateSession(id, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.sessions.all }),
+    onError: () => qc.invalidateQueries({ queryKey: queryKeys.sessions.all }),
   })
 }
 
