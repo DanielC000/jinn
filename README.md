@@ -1,6 +1,6 @@
 # 🧞 Jinn
 
-Lightweight AI gateway daemon orchestrating Claude Code and Codex.
+Lightweight AI gateway daemon orchestrating Claude Code, Codex, and Gemini CLI.
 
 <p align="center">
   <img src="assets/jinn-showcase.gif" alt="Jinn Web Dashboard" width="800" />
@@ -8,16 +8,16 @@ Lightweight AI gateway daemon orchestrating Claude Code and Codex.
 
 ## What is Jinn?
 
-Jinn is an open-source AI gateway that wraps the Claude Code CLI and Codex SDK
-behind a unified daemon process. It routes tasks to AI engines, manages
-connectors like Slack, and schedules background work via cron. Jinn is a bus,
-not a brain.
+Jinn is an open-source AI gateway that wraps the Claude Code CLI, Codex SDK,
+and Gemini CLI behind a unified daemon process. It routes tasks to AI engines,
+manages connectors like Slack, and schedules background work via cron. Jinn is
+a bus, not a brain.
 
 ## 💡 Why Jinn?
 
 Most AI agent frameworks reinvent the wheel — custom tool-calling loops, brittle context management, hand-rolled retry logic. Then they charge you per API call on top.
 
-**Jinn takes a different approach.** It wraps battle-tested professional CLI tools (Claude Code, Codex) and adds only what they're missing: routing, scheduling, connectors, and an org system.
+**Jinn takes a different approach.** It wraps battle-tested professional CLI tools (Claude Code, Codex, Gemini CLI) and adds only what they're missing: routing, scheduling, connectors, and an org system.
 
 ### 🔑 Works with your Anthropic Max subscription
 
@@ -29,7 +29,7 @@ Other frameworks can't do this. Anthropic [banned third-party tools from using M
 
 | | Jinn | OpenClaw |
 |---|---|---|
-| **Architecture** | Wraps professional CLIs (Claude Code, Codex) | Custom agentic loop |
+| **Architecture** | Wraps professional CLIs (Claude Code, Codex, Gemini) | Custom agentic loop |
 | **Max subscription** | ✅ Works (uses official Claude Code CLI) | ❌ Banned since Jan 2026 |
 | **Typical cost** | $200/mo flat (Max) or pay-per-use | $300–750/mo API bills ([reported by users](https://www.reddit.com/r/OpenClaw/)) |
 | **Security** | Inherits Claude Code's security model | 512 vulnerabilities found by CrowdStrike |
@@ -47,7 +47,7 @@ When Claude Code gets better, Jinn gets better — automatically.
 
 ## ✨ Features
 
-- 🔌 **Dual engine support** — Claude Code CLI + Codex SDK
+- 🔌 **Triple engine support** — Claude Code CLI + Codex SDK + Gemini CLI
 - 💬 **Connectors** — Slack (threads + reactions), WhatsApp (QR auth), Discord (bot)
 - 📎 **File attachments** — drag & drop files into web chat, passed through to engines
 - 📱 **Mobile-responsive** — collapsible sidebar and mobile-friendly dashboard
@@ -86,7 +86,7 @@ Then open [http://localhost:7777](http://localhost:7777).
               |                 |  |                  |
       +-------v-------+ +------v------+  +-----------v---+
       |    Engines     | | Connectors  |  |    Web UI     |
-      | Claude | Codex | | Slack|WA|DC |  | localhost:7777|
+      |Claude|Codex|Gem| | Slack|WA|DC |  | localhost:7777|
       +----------------+ +-------------+  +---------------+
               |                 |
       +-------v-------+ +------v------+
@@ -96,8 +96,8 @@ Then open [http://localhost:7777](http://localhost:7777).
 ```
 
 The CLI sends commands to the gateway daemon. The daemon dispatches work to AI
-engines (Claude Code, Codex), manages connector integrations, runs scheduled
-cron jobs, and serves the web dashboard.
+engines (Claude Code, Codex, Gemini CLI), manages connector integrations, runs
+scheduled cron jobs, and serves the web dashboard.
 
 ## ⚙️ Configuration
 
@@ -186,13 +186,13 @@ Jinn is under active development. Here's what's coming:
 ### 🔌 Connectors
 - [x] **Discord** — bot integration via discord.js
 - [x] **WhatsApp** — Baileys-based connector with QR auth and media support
-- [ ] **Telegram** — bot API connector
+- [x] **Telegram** — bot API connector with polling and user allowlist
 - [ ] **iMessage** — macOS-native via AppleScript bridge
 - [ ] **Email** — IMAP/SMTP connector for inbox monitoring and replies
 - [ ] **Webhooks** — generic inbound/outbound HTTP webhooks
 
 ### 🧠 Engines
-- [ ] **Gemini CLI** — Google's Gemini as a third engine option
+- [x] **Gemini CLI** — Google's Gemini as a third engine option
 - [ ] **Local models** — Ollama / llama.cpp integration for offline use
 - [ ] **Engine fallback chains** — auto-failover when primary engine is unavailable
 
