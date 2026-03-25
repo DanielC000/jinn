@@ -170,20 +170,15 @@ export function ChatInput({
   useEffect(() => {
     api
       .getOrg()
-      .then(async (data) => {
-        const emps = data.employees
-        if (!Array.isArray(emps)) return
-        const details = await Promise.all(
-          emps.map(async (name: string) => {
-            try {
-              const emp = await api.getEmployee(name)
-              return { name: emp.name, displayName: emp.displayName, department: emp.department, rank: emp.rank, engine: emp.engine }
-            } catch {
-              return { name }
-            }
-          })
-        )
-        setEmployees(details)
+      .then((data) => {
+        if (!Array.isArray(data.employees)) return
+        setEmployees(data.employees.map((emp) => ({
+          name: emp.name,
+          displayName: emp.displayName,
+          department: emp.department,
+          rank: emp.rank,
+          engine: emp.engine,
+        })))
       })
       .catch(() => {})
   }, [])

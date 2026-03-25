@@ -29,11 +29,30 @@ export interface Employee {
   persona: string;
   emoji?: string;
   alwaysNotify?: boolean;
+  reportsTo?: string | string[];
+  parentName?: string | null;
+  directReports?: string[];
+  depth?: number;
+  chain?: string[];
+}
+
+export interface OrgWarning {
+  employee: string;
+  type: string;
+  message: string;
+  ref?: string;
+}
+
+export interface OrgHierarchy {
+  root: string | null;
+  sorted: string[];
+  warnings: OrgWarning[];
 }
 
 export interface OrgData {
   departments: string[];
-  employees: string[];
+  employees: Employee[];
+  hierarchy: OrgHierarchy;
 }
 
 const BASE =
