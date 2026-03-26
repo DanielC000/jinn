@@ -85,7 +85,7 @@ function buildMigrateArgs(engine: string, prompt: string): string[] {
       return ["--yolo", prompt];
     case "claude":
     default:
-      return ["-p", prompt];
+      return ["-p", "--dangerously-skip-permissions", prompt];
   }
 }
 
