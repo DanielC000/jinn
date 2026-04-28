@@ -194,7 +194,12 @@ export class SlackConnector implements Connector {
 
     // Handle @mentions in channels
     this.app.event("app_mention", async ({ event }) => {
-      logger.info(`[slack] Received app_mention: user=${event.user} channel=${event.channel} text="${(event.text || "").slice(0, 50)}"`);
+      const userId = event.user;
+      if (!userId) {
+        logger.debug(`[slack] app_mention without user id, ignoring`);
+        return;
+      }
+      logger.info(`[slack] Received app_mention: user=${userId} channel=${event.channel} text="${(event.text || "").slice(0, 50)}"`);
 
       if (!this.handler) {
         logger.info(`[slack] No handler registered, dropping mention`);
@@ -204,8 +209,8 @@ export class SlackConnector implements Connector {
         logger.debug(`Ignoring old Slack mention ${event.ts}`);
         return;
       }
-      if (this.allowedUsers && !this.allowedUsers.has(event.user)) {
-        logger.debug(`Ignoring Slack mention from unauthorized user ${event.user}`);
+      if (this.allowedUsers && !this.allowedUsers.has(userId)) {
+        logger.debug(`Ignoring Slack mention from unauthorized user ${userId}`);
         return;
       }
 
@@ -250,8 +255,8 @@ export class SlackConnector implements Connector {
         messageId: event.ts,
         channel: event.channel,
         thread: (event as any).thread_ts,
-        user: event.user,
-        userId: event.user,
+        user: userId,
+        userId,
         text: mentionText,
         attachments,
         raw: event,
