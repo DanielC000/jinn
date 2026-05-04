@@ -1,4 +1,8 @@
 import TelegramBot from "node-telegram-bot-api";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type {
   Connector,
   ConnectorCapabilities,
@@ -11,6 +15,8 @@ import type {
 import { deriveSessionKey, buildReplyContext, isOldTelegramMessage } from "./threads.js";
 import { formatResponse } from "./format.js";
 import { logger } from "../../shared/logger.js";
+import { FILES_DIR } from "../../shared/paths.js";
+import { insertFile } from "../../sessions/registry.js";
 
 export class TelegramConnector implements Connector {
   name = "telegram";
@@ -89,6 +95,116 @@ export class TelegramConnector implements Connector {
       const username =
         telegramMsg.from?.username || telegramMsg.from?.first_name || "unknown";
 
+      let messageText: string =
+        (telegramMsg as any).text || (telegramMsg as any).caption || "";
+
+      // File attachments (document / photo / video) → save to FILES_DIR + register
+      type AttachmentSpec = {
+        file_id: string;
+        suggestedName?: string;
+        mime?: string;
+        kind: "document" | "photo" | "video";
+      };
+      const attachmentSpecs: AttachmentSpec[] = [];
+      const tg = telegramMsg as any;
+      if (tg.document) {
+        attachmentSpecs.push({
+          file_id: tg.document.file_id,
+          suggestedName: tg.document.file_name,
+          mime: tg.document.mime_type,
+          kind: "document",
+        });
+      }
+      if (tg.photo && tg.photo.length > 0) {
+        // Telegram returns size variants; the largest is last.
+        const largest = tg.photo[tg.photo.length - 1];
+        attachmentSpecs.push({
+          file_id: largest.file_id,
+          mime: "image/jpeg",
+          kind: "photo",
+        });
+      }
+      if (tg.video) {
+        attachmentSpecs.push({
+          file_id: tg.video.file_id,
+          suggestedName: tg.video.file_name,
+          mime: tg.video.mime_type || "video/mp4",
+          kind: "video",
+        });
+      }
+
+      const savedAttachments: Array<{
+        id: string;
+        displayName: string;
+        path: string;
+        kind: string;
+        size: number;
+      }> = [];
+      for (const spec of attachmentSpecs) {
+        try {
+          fs.mkdirSync(FILES_DIR, { recursive: true });
+          const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tg-file-"));
+          try {
+            const downloaded = await (this.bot as any).downloadFile(
+              spec.file_id,
+              tmpDir,
+            );
+            const id = crypto.randomUUID();
+            const ext =
+              (spec.suggestedName && path.extname(spec.suggestedName)) ||
+              path.extname(downloaded) ||
+              "";
+            const finalPath = path.join(FILES_DIR, `${id}${ext}`);
+            fs.copyFileSync(downloaded, finalPath);
+            const stat = fs.statSync(finalPath);
+            const displayName =
+              spec.suggestedName || `${spec.kind}-${id.slice(0, 8)}${ext}`;
+            try {
+              insertFile({
+                id,
+                filename: displayName,
+                size: stat.size,
+                mimetype: spec.mime || "application/octet-stream",
+                path: finalPath,
+              });
+            } catch (regErr) {
+              logger.warn(
+                `[telegram] insertFile failed (continuing): ${regErr instanceof Error ? regErr.message : regErr}`,
+              );
+            }
+            savedAttachments.push({
+              id,
+              displayName,
+              path: finalPath,
+              kind: spec.kind,
+              size: stat.size,
+            });
+            logger.info(
+              `[telegram] Saved ${spec.kind} attachment '${displayName}' (${stat.size} bytes) → ${finalPath}`,
+            );
+          } finally {
+            try {
+              fs.rmSync(tmpDir, { recursive: true, force: true });
+            } catch {
+              /* non-fatal */
+            }
+          }
+        } catch (err) {
+          logger.error(
+            `[telegram] Failed to save ${spec.kind} attachment: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
+      if (savedAttachments.length > 0) {
+        const block = savedAttachments
+          .map(
+            (a) =>
+              `📎 ${a.kind}: ${a.displayName} (${a.size} bytes) → ${a.path}`,
+          )
+          .join("\n");
+        messageText = messageText ? `${messageText}\n\n${block}` : block;
+      }
+
       const msg: IncomingMessage = {
         connector: this.name,
         source: "telegram",
@@ -98,7 +214,7 @@ export class TelegramConnector implements Connector {
         channel: String(telegramMsg.chat.id),
         user: username,
         userId: String(userId ?? "unknown"),
-        text: telegramMsg.text || "",
+        text: messageText,
         attachments: [],
         raw: telegramMsg,
         transportMeta: {
