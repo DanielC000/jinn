@@ -344,12 +344,12 @@ import os from "node:os";
 import path from "node:path";
 import { buildSessionSettings, writeSessionSettings, sessionSettingsPath, seedTrust } from "./claude-settings.js";
 
-test("buildSessionSettings registers Stop/SessionStart hooks pointing at the relay with the session id", () => {
+test("buildSessionSettings registers Stop/SessionStart/StopFailure hooks pointing at the relay with the session id", () => {
   const s = buildSessionSettings({ sessionId: "jinn-abc", relayScript: "/h/relay.mjs", appendSystemPrompt: "SYS" });
   const stop = s.hooks.Stop[0].hooks[0];
   assert.equal(stop.type, "command");
   assert.match(stop.command, /relay\.mjs.*jinn-abc/);
-  assert.ok(s.hooks.SessionStart && s.hooks.PreToolUse && s.hooks.PostToolUse);
+  assert.ok(s.hooks.SessionStart && s.hooks.PreToolUse && s.hooks.PostToolUse && s.hooks.StopFailure);
   assert.equal(s.appendSystemPrompt, "SYS");
 });
 
@@ -394,8 +394,11 @@ export interface SessionSettingsOpts {
 interface HookCommand { type: "command"; command: string; }
 interface HookMatcher { hooks: HookCommand[]; }
 
+// StopFailure fires INSTEAD of Stop when an API error ends the turn (rate_limit,
+// billing_error, server_error, …) — confirmed by the Phase 0 spike. It is the
+// structured rate-limit signal, so it must be registered alongside Stop.
 export interface ClaudeSettings {
-  hooks: Record<"SessionStart" | "Stop" | "PreToolUse" | "PostToolUse", HookMatcher[]>;
+  hooks: Record<"SessionStart" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse", HookMatcher[]>;
   appendSystemPrompt?: string;
 }
 
@@ -409,6 +412,7 @@ export function buildSessionSettings(opts: SessionSettingsOpts): ClaudeSettings 
     hooks: {
       SessionStart: [cmd()],
       Stop: [cmd()],
+      StopFailure: [cmd()],
       PreToolUse: [cmd()],
       PostToolUse: [cmd()],
     },
@@ -569,12 +573,15 @@ Expected: FAIL — module not found.
 
 ```ts
 export interface HookPayload {
-  hook_event_name: "SessionStart" | "Stop" | "PreToolUse" | "PostToolUse" | string;
+  hook_event_name: "SessionStart" | "Stop" | "StopFailure" | "PreToolUse" | "PostToolUse" | string;
   session_id?: string;
   transcript_path?: string;
   cwd?: string;
   last_assistant_message?: string;
   tool_name?: string;
+  /** Present on StopFailure: enum — rate_limit | authentication_failed | billing_error | invalid_request | server_error | max_output_tokens | unknown */
+  error?: string;
+  error_details?: string;
   [k: string]: unknown;
 }
 
@@ -1354,6 +1361,15 @@ test("TurnResolver treats a missing session id as a hard error", async () => {
   const v = await r.promise;
   assert.match(v.error, /session id/i);
 });
+
+test("TurnResolver settles immediately on StopFailure (does not wait for SessionStart) and exposes it", async () => {
+  const r = new TurnResolver({ turnTimeoutMs: 1000, fallbackSessionId: "old" });
+  r.onHook({ hook_event_name: "StopFailure", error: "rate_limit", error_details: "resets 3pm" });
+  const v = await r.promise;
+  assert.match(v.error, /rate_limit/);
+  assert.equal(v.numTurns, 1); // so isDeadSessionError won't false-positive
+  assert.equal(r.stopFailure?.error, "rate_limit");
+});
 ```
 
 - [ ] **Step 3: Run test to verify it fails**
@@ -1388,6 +1404,7 @@ export class TurnResolver {
   private claudeSessionId: string | undefined;
   private gotSessionStart = false;
   private stopPayload: HookPayload | undefined;
+  private stopFailurePayload: HookPayload | undefined;
   private timer: NodeJS.Timeout;
 
   constructor(private opts: TurnResolverOpts) {
@@ -1409,14 +1426,29 @@ export class TurnResolver {
       this.stopPayload = h;
       if (typeof h.session_id === "string" && !this.claudeSessionId) this.claudeSessionId = h.session_id;
       this.maybeComplete();
+    } else if (h.hook_event_name === "StopFailure") {
+      // API error ended the turn (rate_limit, billing_error, …). Settle immediately
+      // with an error — do NOT wait for SessionStart (an early failure may never
+      // produce one). numTurns:1 keeps isDeadSessionError from false-positiving.
+      this.stopFailurePayload = h;
+      if (typeof h.session_id === "string" && !this.claudeSessionId) this.claudeSessionId = h.session_id;
+      this.settle({
+        sessionId: this.claudeSessionId ?? this.opts.fallbackSessionId ?? "",
+        result: "",
+        error: `Interactive turn failed: ${h.error ?? "unknown"}`,
+        numTurns: 1,
+      });
     }
   }
 
   /** Claude session id learned so far (for engineSessionId persistence on warm-PTY turns). */
   get sessionId(): string | undefined { return this.claudeSessionId; }
+  /** The StopFailure payload, if the turn ended in an API error (Task 5.3 maps it to rateLimit). */
+  get stopFailure(): HookPayload | undefined { return this.stopFailurePayload; }
   /** transcript_path from whichever hook carried it. */
   get transcriptPath(): string | undefined {
-    return typeof this.stopPayload?.transcript_path === "string" ? this.stopPayload.transcript_path : undefined;
+    const p = this.stopPayload?.transcript_path ?? this.stopFailurePayload?.transcript_path;
+    return typeof p === "string" ? p : undefined;
   }
 
   private maybeComplete(): void {
@@ -1563,6 +1595,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     if (opts.attachments?.length) {
       text += "\n\nAttached files:\n" + opts.attachments.map((a) => `- ${a}`).join("\n");
     }
+    // Phase 0 finding: bracketed-paste does NOT neutralize a leading /, @, or ! —
+    // they still trigger the slash-command / mention / bash-mode handlers and the
+    // turn is never submitted. Prepend a space so it's treated as a literal message.
+    if (/^[/@!]/.test(text)) text = " " + text;
     proc.write(`\x1b[200~${text}\x1b[201~`);
     setTimeout(() => proc.write("\r"), 50); // small delay before submit — see Task 0.1
   }
@@ -1637,6 +1673,20 @@ test("sumTranscriptUsage sums usage across assistant lines", () => {
   assert.equal(u.assistantTurns, 2);
 });
 
+test("sumTranscriptUsage dedupes assistant lines sharing a message.id (effort-high thinking+text split)", () => {
+  // Phase 0 finding: --effort high emits TWO assistant lines per API response —
+  // one with the thinking block, one with the text block — same message.id, same usage.
+  const lines = [
+    JSON.stringify({ type: "assistant", message: { id: "m1", usage: { input_tokens: 100, output_tokens: 50 } } }),
+    JSON.stringify({ type: "assistant", message: { id: "m1", usage: { input_tokens: 100, output_tokens: 50 } } }),
+    JSON.stringify({ type: "assistant", message: { id: "m2", usage: { input_tokens: 200, output_tokens: 80 } } }),
+  ].join("\n");
+  const u = sumTranscriptUsage(lines);
+  assert.equal(u.inputTokens, 300);
+  assert.equal(u.outputTokens, 130);
+  assert.equal(u.assistantTurns, 2);
+});
+
 test("computeInteractiveCost returns null for a missing transcript", () => {
   assert.equal(computeInteractiveCost("/nope/x.jsonl", "opus"), null);
 });
@@ -1664,6 +1714,7 @@ export interface TranscriptUsage { inputTokens: number; outputTokens: number; ca
 
 export function sumTranscriptUsage(content: string): TranscriptUsage {
   const u: TranscriptUsage = { inputTokens: 0, outputTokens: 0, cacheTokens: 0, assistantTurns: 0 };
+  const seen = new Set<string>();
   for (const line of content.split("\n")) {
     const t = line.trim();
     if (!t) continue;
@@ -1672,6 +1723,15 @@ export function sumTranscriptUsage(content: string): TranscriptUsage {
     if (msg.type !== "assistant") continue;
     const usage = msg?.message?.usage;
     if (!usage) continue;
+    // Phase 0 finding: --effort high emits two assistant lines per response
+    // (thinking + text) with the same message.id and identical usage. Dedupe
+    // by message.id so tokens aren't double-counted. Lines without an id are
+    // always counted (can't dedupe what we can't key).
+    const id = msg?.message?.id;
+    if (typeof id === "string") {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
     u.assistantTurns += 1;
     u.inputTokens += Number(usage.input_tokens ?? 0);
     u.outputTokens += Number(usage.output_tokens ?? 0);
@@ -1711,37 +1771,36 @@ git add packages/jimmy/src/engines/interactive-cost.ts packages/jimmy/src/engine
 git commit -m "feat(engine): reconstruct per-turn cost from the transcript"
 ```
 
-### Task 5.2: Interactive rate-limit detection
+### Task 5.2: Rate-limit mapping from the `StopFailure` hook
 
 **Files:**
 - Create: `packages/jimmy/src/engines/interactive-ratelimit.ts`
 - Test: `packages/jimmy/src/engines/interactive-ratelimit.test.ts`
 
-**[SPIKE-DEP]** Depends on Task 0.3's rate-limit source finding. The code below scans the transcript for a rate-limit marker in assistant/system lines and returns an `EngineRateLimitInfo`. If Task 0.3 found a `Notification` hook is the better source, move detection into the engine's hook listener instead and have this module parse that payload shape.
+Phase 0 resolved the source: the rate-limit signal is the **`StopFailure` hook** payload's `error` enum (`rate_limit | authentication_failed | billing_error | invalid_request | server_error | max_output_tokens | unknown`) — `StopFailure` fires *instead of* `Stop` when an API error ends the turn. NOT transcript scanning. This module is a pure mapping from a `StopFailure` payload to `EngineRateLimitInfo`, shaped exactly like what `ClaudeEngine` produces from `rate_limit_event` JSON, so the existing `detectRateLimit` / wait-retry-fallback machinery in `manager.ts` and `api.ts` works unchanged. (`TurnResolver` already captures the `StopFailure` payload — Task 4.3; this maps it; Task 5.3 wires it into `run()`.)
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { scanForRateLimit, detectInteractiveRateLimit } from "./interactive-ratelimit.js";
+import { rateLimitFromStopFailure } from "./interactive-ratelimit.js";
 
-test("scanForRateLimit detects a usage-limit marker and returns rejected status", () => {
-  const content = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Claude usage limit reached. Resets 3pm" }] } });
-  const info = scanForRateLimit(content);
+test("rateLimitFromStopFailure maps a rate_limit error to a rejected EngineRateLimitInfo", () => {
+  const info = rateLimitFromStopFailure({ hook_event_name: "StopFailure", error: "rate_limit", error_details: "resets 3pm" });
   assert.equal(info?.status, "rejected");
+  assert.equal(info?.rateLimitType, "interactive_detected");
 });
 
-test("scanForRateLimit returns null for an ordinary transcript", () => {
-  const content = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Here is your answer." }] } });
-  assert.equal(scanForRateLimit(content), null);
+test("rateLimitFromStopFailure returns null for a non-rate-limit StopFailure error", () => {
+  assert.equal(rateLimitFromStopFailure({ hook_event_name: "StopFailure", error: "server_error" }), null);
+  assert.equal(rateLimitFromStopFailure({ hook_event_name: "StopFailure", error: "billing_error" }), null);
 });
 
-test("detectInteractiveRateLimit returns null for a missing file", () => {
-  assert.equal(detectInteractiveRateLimit("/nope.jsonl"), null);
+test("rateLimitFromStopFailure returns null for non-StopFailure / missing error / undefined", () => {
+  assert.equal(rateLimitFromStopFailure({ hook_event_name: "Stop" }), null);
+  assert.equal(rateLimitFromStopFailure({ hook_event_name: "StopFailure" }), null);
+  assert.equal(rateLimitFromStopFailure(undefined), null);
 });
 ```
 
@@ -1753,30 +1812,21 @@ Expected: FAIL — module not found.
 - [ ] **Step 3: Implement**
 
 ```ts
-import fs from "node:fs";
 import type { EngineRateLimitInfo } from "../shared/types.js";
+import type { HookPayload } from "../gateway/hook-registry.js";
 
-const RATE_LIMIT_RE = /usage limit reached|rate limit|too many requests/i;
-
-export function scanForRateLimit(content: string): EngineRateLimitInfo | null {
-  // Scan the last ~40 lines — a rate limit shows up at the end of a turn.
-  const lines = content.split("\n").filter(Boolean).slice(-40);
-  for (const line of lines) {
-    let msg: any;
-    try { msg = JSON.parse(line); } catch { continue; }
-    if (msg.type !== "assistant" && msg.type !== "system") continue;
-    const text = JSON.stringify(msg?.message?.content ?? msg);
-    if (RATE_LIMIT_RE.test(text)) {
-      return { status: "rejected", rateLimitType: "interactive_detected" };
-    }
-  }
-  return null;
-}
-
-export function detectInteractiveRateLimit(transcriptPath: string): EngineRateLimitInfo | null {
-  let content: string;
-  try { content = fs.readFileSync(transcriptPath, "utf-8"); } catch { return null; }
-  return scanForRateLimit(content);
+/**
+ * Map a StopFailure hook payload to an EngineRateLimitInfo.
+ * Returns null unless the turn failed specifically with error === "rate_limit".
+ * The shape matches what ClaudeEngine produces from `rate_limit_event` JSON, so
+ * detectRateLimit() / the wait-retry machinery in manager.ts work unchanged.
+ * (error_details may carry a reset time, but its format is unconfirmed — left
+ * unparsed; manager.ts computes a default backoff when resetsAt is absent.)
+ */
+export function rateLimitFromStopFailure(payload: HookPayload | undefined): EngineRateLimitInfo | null {
+  if (!payload || payload.hook_event_name !== "StopFailure") return null;
+  if (payload.error !== "rate_limit") return null;
+  return { status: "rejected", rateLimitType: "interactive_detected" };
 }
 ```
 
@@ -1789,7 +1839,7 @@ Expected: PASS (3 tests).
 
 ```bash
 git add packages/jimmy/src/engines/interactive-ratelimit.ts packages/jimmy/src/engines/interactive-ratelimit.test.ts
-git commit -m "feat(engine): interactive rate-limit detection from transcript"
+git commit -m "feat(engine): map StopFailure hook to EngineRateLimitInfo"
 ```
 
 ### Task 5.3: Wire cost & rate-limit reconstruction into `InteractiveClaudeEngine`
@@ -1801,22 +1851,22 @@ git commit -m "feat(engine): interactive rate-limit detection from transcript"
 
 ```ts
 import { computeInteractiveCost } from "./interactive-cost.js";
-import { detectInteractiveRateLimit } from "./interactive-ratelimit.js";
+import { rateLimitFromStopFailure } from "./interactive-ratelimit.js";
 ```
 
 - [ ] **Step 2: Add reconstruction at the end of `run()`.** Replace the `// Task 5.3 inserts ...` comment + `return result;` with:
 
 ```ts
-    // Reconstruct cost + rate-limit from the transcript (the Stop hook carries neither).
+    // Reconstruct cost from the transcript (the Stop hook carries no cost).
     const transcriptPath = resolver.transcriptPath;
     if (transcriptPath && !result.error) {
       const cost = computeInteractiveCost(transcriptPath, opts.model);
       if (cost) { result.cost = cost.cost; result.numTurns = cost.turns; }
     }
-    if (transcriptPath) {
-      const rl = detectInteractiveRateLimit(transcriptPath);
-      if (rl) result.rateLimit = rl;
-    }
+    // Map a StopFailure rate-limit into result.rateLimit so manager.ts's
+    // wait/retry/fallback machinery engages exactly as it does for `claude -p`.
+    const rl = rateLimitFromStopFailure(resolver.stopFailure);
+    if (rl) result.rateLimit = rl;
     return result;
   }
 ```
