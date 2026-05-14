@@ -443,11 +443,12 @@ export async function handleApiRequest(
       const session = getSession(params.id);
       if (!session) return notFound(res);
 
-      // Kill any live engine process for this session before deleting it.
+      // Tear down any live/warm engine process for this session before deleting it.
+      // kill() is safe to call unconditionally — it's a no-op when nothing is running.
       const engine = context.sessionManager.getEngine(session.engine);
-      if (engine && isInterruptibleEngine(engine) && engine.isAlive(params.id)) {
-        logger.info(`Killing live engine process for deleted session ${params.id}`);
-        engine.kill(params.id);
+      if (engine && isInterruptibleEngine(engine)) {
+        logger.info(`Killing engine process for deleted session ${params.id}`);
+        engine.kill(params.id, "Interrupted: session deleted");
       }
 
       const deleted = deleteSession(params.id);
@@ -463,7 +464,7 @@ export async function handleApiRequest(
       const session = getSession(params.id);
       if (!session) return notFound(res);
       const engine = context.sessionManager.getEngine(session.engine);
-      if (engine && isInterruptibleEngine(engine) && engine.isAlive(params.id)) {
+      if (engine && isInterruptibleEngine(engine)) {
         engine.kill(params.id, "Interrupted by user");
       }
       context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
@@ -478,8 +479,8 @@ export async function handleApiRequest(
       const session = getSession(params.id);
       if (!session) return notFound(res);
       const engine = context.sessionManager.getEngine(session.engine);
-      if (engine && isInterruptibleEngine(engine) && engine.isAlive(params.id)) {
-        engine.kill(params.id, "Interrupted by reset");
+      if (engine && isInterruptibleEngine(engine)) {
+        engine.kill(params.id, "Interrupted: session reset");
       }
       context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
       const meta = { ...(session.transportMeta || {}) } as Record<string, unknown>;
@@ -603,13 +604,14 @@ export async function handleApiRequest(
       const ids: string[] = body.ids;
       if (!Array.isArray(ids) || ids.length === 0) return badRequest(res, "ids array is required");
 
-      // Kill any live engine processes before deleting
+      // Tear down any live/warm engine processes before deleting. kill() is safe
+      // to call unconditionally — it's a no-op when nothing is running.
       for (const id of ids) {
         const session = getSession(id);
         if (!session) continue;
         const engine = context.sessionManager.getEngine(session.engine);
-        if (engine && isInterruptibleEngine(engine) && engine.isAlive(id)) {
-          engine.kill(id);
+        if (engine && isInterruptibleEngine(engine)) {
+          engine.kill(id, "Interrupted: session deleted");
         }
       }
 
@@ -776,7 +778,12 @@ export async function handleApiRequest(
       // If a turn is already running, check whether we should interrupt or queue.
       // Notifications (child completion callbacks) should never interrupt — just queue.
       if (session.status === "running") {
-        if (!isNotification && (config.sessions?.interruptOnNewMessage ?? true) && isInterruptibleEngine(engine) && engine.isAlive(session.id)) {
+        // Only interrupt if a turn is actually in flight. With warm PTYs, isAlive is
+        // also true for an idle-but-warm engine — isTurnRunning distinguishes them.
+        // Headless engines lack isTurnRunning; their isAlive ≈ "turn running".
+        const turnRunning = isInterruptibleEngine(engine)
+          && ("isTurnRunning" in engine ? (engine as any).isTurnRunning(session.id) : engine.isAlive(session.id));
+        if (!isNotification && (config.sessions?.interruptOnNewMessage ?? true) && turnRunning) {
           logger.info(`Interrupting running session ${session.id} for new message`);
           engine.kill(session.id, "Interrupted: new message received");
           // Wait briefly for the process to exit so the queue slot frees up

@@ -740,6 +740,10 @@ export async function startGateway(
     onOrgChange: () => {
       employeeRegistry = scanOrg();
       logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
+      // Org/persona changed — drop warm PTYs so the next turn respawns with fresh --append-system-prompt
+      if (claudeEngine instanceof InteractiveClaudeEngine) {
+        claudeEngine.killAll();
+      }
       emit("org:changed", {});
     },
     onSkillsChange: () => {

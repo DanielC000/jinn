@@ -8,6 +8,7 @@ import type {
   Session,
   Target,
 } from "../shared/types.js";
+import { isInterruptibleEngine } from "../shared/types.js";
 import {
   accumulateSessionCost,
   createSession,
@@ -417,6 +418,12 @@ export class SessionManager {
                 ? `Claude usage limit — using GPT until ${resumeAt.toISOString()}`
                 : "Claude usage limit — using GPT temporarily",
             });
+
+            // Switching away from Claude — drop any warm Claude PTY so it isn't orphaned.
+            const claudeEngine = this.engines.get("claude");
+            if (claudeEngine && isInterruptibleEngine(claudeEngine)) {
+              claudeEngine.kill(session.id, "Interrupted: engine switched");
+            }
 
             const fallbackConfig = this.config.engines.codex;
             const fallbackEffort = resolveEffort(fallbackConfig, session, employee);
@@ -837,6 +844,11 @@ export class SessionManager {
   resetSession(sessionKey: string): void {
     const session = getSessionBySessionKey(sessionKey);
     if (session) {
+      // Tear down any live/warm engine process before deleting the session.
+      const engine = this.engines.get(session.engine);
+      if (engine && isInterruptibleEngine(engine)) {
+        engine.kill(session.id, "Interrupted: session reset");
+      }
       deleteSession(session.id);
       logger.info(`Deleted session ${session.id}`);
     }
