@@ -113,15 +113,27 @@ New file `packages/jimmy/src/engines/claude-interactive.ts`. Implements
 **Spawn model.** Uses `node-pty` instead of `child_process.spawn`. The PTY gives
 the binary a TTY on **both stdin and stdout** (required for `cc_entrypoint=cli`).
 
-Fresh session:
+**Flag parity is mandatory.** The arg list must reproduce *everything*
+`ClaudeEngine` passes today (`engines/claude.ts:108-124`), or surfaces silently
+regress:
 ```
-claude "<prompt>" --append-system-prompt <sys> --mcp-config <path> \
-  --model <model> --dangerously-skip-permissions --settings <jinn-settings>
+claude [--resume <id>] "<prompt>" \
+  --chrome \                              # unconditional today — drop it and every session loses browser tooling
+  --effort <level> \                      # when effortLevel !== "default"; used on EVERY turn via resolveEffort
+  --model <model> \
+  --append-system-prompt <sys> \
+  --dangerously-skip-permissions \
+  --settings <jinn-settings> \
+  <...employee.cliFlags> \                # raw splat, per-employee
+  --mcp-config <path>                     # variadic — MUST come after the positional prompt
 ```
-Resume:
-```
-claude --resume <session-id> "<prompt>" --append-system-prompt <sys> ... --settings <jinn-settings>
-```
+- `attachments` are appended to the prompt text (`"\n\nAttached files:\n- ..."`),
+  exactly as `claude.ts:115-118` — done in the engine, not assumed.
+- `--effort` and `--chrome` must be **verified to work in interactive mode**
+  (added to Open Questions). `--effort` drives org-wide effort selection.
+- **ARG_MAX risk**: `systemPrompt` from `buildContext` can be ~100 KB. Passing it
+  as a CLI arg risks `E2BIG`. Prefer putting `appendSystemPrompt` *inside the
+  per-session `--settings` JSON* rather than on argv. Validate.
 
 Environment: clean env (filter `CLAUDE_CODE_*` / `CLAUDECODE` as today), **do not
 set `CLAUDE_CODE_ENTRYPOINT`** (the binary sets it). Set `CLAUDE_CODE_NO_FLICKER`
@@ -141,86 +153,223 @@ Either way the engine waits for the `Stop` hook callback, extracts
 decides whether to kill it or keep it warm. The default (no KEEP ALIVE, not
 viewed in the web UI) is kill-after-turn, mirroring today's `claude -p` lifecycle.
 
-**`run()` resolution.** The `run()` promise resolves when the gateway receives the
-`Stop` hook POST for this Jinn session. Correlation: each Jinn session gets a
-per-session `--settings` file whose hook commands embed the Jinn session id (same
-pattern as today's per-session `mcpConfigPath` temp file). The engine registers a
-pending resolver keyed by Jinn session id; the hook endpoint resolves it.
+**`run()` resolution — the turn-completion contract.** This is subtle and several
+audit blockers live here:
+- Correlation: each Jinn session gets a per-session `--settings` file whose hook
+  commands embed the **Jinn session id** (`session.id`, not `sessionKey`). The
+  engine registers a pending resolver keyed by `session.id`; the hook endpoint
+  resolves it.
+- **`run()` must not resolve until BOTH `SessionStart` (Claude session id
+  captured) AND `Stop` have been seen.** Claude's session id arrives via the
+  `SessionStart` hook, *not* synchronously in `EngineResult`. If it's lost,
+  `engineSessionId` stays null and the next turn silently starts a brand-new
+  Claude session, losing all history. A missing id is a **hard error**, not an
+  empty string.
+- **Hook-vs-`run()` race**: `SessionStart` can fire within milliseconds of spawn,
+  before the resolver is registered. The endpoint must **buffer hook payloads for
+  unknown session ids** (short-TTL map) and drain the buffer on registration.
+- **Watchdog**: a missed or delayed `Stop` hook would hang `run()` forever —
+  wedging the `SessionQueue` slot, never clearing heartbeats/typing/reactions.
+  `run()` has a **turn-timeout watchdog**; on expiry it settles with an error and
+  the lifecycle manager kills the PTY.
+- **`EngineResult` must synthesize `numTurns: 1`** (and a cost if obtainable —
+  see Cost Tracking) so `isDeadSessionError`'s `cost===0 && numTurns===0` heuristic
+  doesn't misclassify every errored interactive turn as a dead session and wipe
+  `engineSessionId`.
 
-**`kill()` / `isAlive()` / `killAll()`:** identical to today's `ClaudeEngine` —
-SIGTERM then SIGKILL the PTY process group.
+**`kill()` / `isAlive()` / `isTurnRunning()` / `killAll()`:**
+- `kill()` SIGTERM→SIGKILLs the PTY **and must independently settle the pending
+  hook-resolver** with an `"Interrupted"`-prefixed error — a killed PTY emits no
+  `Stop` hook, so without this `run()` hangs. The `"Interrupted"` prefix is a
+  load-bearing contract checked in `manager.ts` and `api.ts` (gates skip-reply,
+  skip-retry, status→`idle`).
+- **`isAlive()` ≠ "a turn is running".** With warm PTYs, `isAlive()` is true
+  between turns. The five call sites that do `if (isAlive) kill()`
+  (`api.ts:446,464,479,609,777`) would kill warm PTYs. Add a distinct
+  **`isTurnRunning(id)`** and audit every call site: interrupt-on-new-message and
+  delete/reset should use `isTurnRunning` (to interrupt) but route teardown
+  through the lifecycle manager's `releaseSession(id)`.
+- `killAll()` must delegate to the PTY lifecycle manager (it, not the engine,
+  owns the process map).
 
-**Retry / rate-limit / dead-session handling:** reuse the existing logic in
-`engines/claude.ts` unchanged (transient-error retry, `isDeadSessionError`). Rate
-limits surface differently in interactive mode — see Open Questions.
+**Retry / transient-error tier is dropped.** `isTransientError` keys off exit
+codes / stderr that interactive mode doesn't produce — that in-engine retry tier
+simply won't fire. Acceptable (the manager-level rate-limit retry is what
+matters), but state it explicitly rather than "reused unchanged".
 
 ### Component: hook relay + endpoint
 
-**Settings file.** Jinn writes a per-session settings JSON (to `JINN_HOME`,
-cleaned up like `mcpConfigPath`) registering hooks:
+**Settings file.** Jinn writes a per-session settings JSON to
+`JINN_HOME/tmp/settings/<session-id>.json` (mirroring `writeMcpConfigFile`, but
+with an **atomic `.tmp`+rename** write — a hook relay must never read a
+half-written file). It registers hooks:
 - `SessionStart` → learn Claude's `session_id` + `transcript_path`.
 - `Stop` → turn-end + `last_assistant_message`.
 - `PreToolUse` / `PostToolUse` → optional progress deltas.
 
+It should also carry `appendSystemPrompt` (ARG_MAX, see Spawn model) and **must
+not drop** the permissions allowlist that `cli/setup.ts` already writes to
+`$JINN_HOME/.claude/settings.local.json` — verify Claude Code's settings-merge
+keeps both, or fold those permissions into this file.
+
+**Lifecycle: PTY-lifetime, not turn-lifetime.** The `--settings` file is read on
+*every* hook invocation, so a warm PTY needs it to survive across turns. It is
+owned and cleaned up by the **PTY lifecycle manager** when the PTY dies — **not**
+in `runSession`'s `finally` (which fires the instant a turn ends). `--mcp-config`
+is read only at spawn, so that one can still be cleaned up post-spawn.
+
 Each hook `command` is the **Jinn hook-relay script** (written once to
-`JINN_HOME`), invoked with the Jinn session id, the gateway port, and a shared
-secret as args.
+`JINN_HOME`), invoked with the Jinn `session.id` as an arg.
 
-**Relay script.** A tiny script: reads the hook JSON from stdin, wraps it with
-the Jinn session id, `POST`s to `http://localhost:<gatewayPort>/api/internal/hook`
-with the shared secret header. Exits 0.
+**Relay script.** A tiny script: reads the hook JSON from stdin, wraps it with the
+Jinn `session.id`, reads the gateway URL + secret from `JINN_HOME/gateway.json`,
+`POST`s to `/api/internal/hook` with the secret header. Exits 0.
 
-**Endpoint.** New internal route in `gateway/api.ts`: `POST /api/internal/hook`.
-Localhost-only + shared-secret guarded. Routes by `hook_event_name`:
+**`gateway.json`.** New file written to `JINN_HOME` on gateway boot, containing
+`{ port, secret, pid }`. Solves three problems: (a) the relay script — a separate
+process spawned by `claude` — has no other way to discover the port (it lives
+only in config/memory and is `-p`-overridable); (b) the shared secret needs a
+home; (c) PTY/relay pids can be reaped on next boot if the gateway crashed.
+Either rewrite `gateway.json` on config hot-reload **or** make `gateway.port`
+restart-only (see Configuration).
+
+**Endpoint.** New internal route in `gateway/api.ts`: `POST /api/internal/hook`,
+matched in the existing `handleApiRequest` chain, body via `readJsonBody`.
+**There is no HTTP auth in Jinn today** — this guard is net-new: require the
+`gateway.json` secret as a header **and** independently assert
+`req.socket.remoteAddress` is loopback (don't trust `config.gateway.host`, which
+operators can set to `0.0.0.0`). Routes by `hook_event_name`:
 - `Stop` → resolve the pending `run()` promise for that Jinn session.
 - `SessionStart` → record Claude session id + transcript path.
-- `Pre/PostToolUse` → emit `StreamDelta` progress to the session's WS subscribers.
+- `Pre/PostToolUse` → emit `StreamDelta` progress via the existing
+  `context.emit("session:delta", …)`.
+- Unknown session id → buffer in a short-TTL map (hook-vs-`run()` race).
+
+### Component: gateway WebSocket — raw PTY channel
+
+Jinn's existing WebSocket (`gateway/server.ts`) is a **single global broadcast
+bus**: one flat `Set<WebSocket>`, every event `JSON.stringify`'d to every client,
+**no inbound `message` handling, no per-session routing**. Clients self-filter by
+`sessionId`. CLI mode cannot reuse it — raw PTY bytes are high-volume and would
+spam every tab, and there's no upstream path for stdin injection or resize.
+
+Add a **dedicated `/ws/pty/:sessionId` channel**, handled in the `upgrade` handler
+in `server.ts`:
+- Per-session client registry (not the global set).
+- Binary frames for PTY stdout (no JSON wrapping).
+- `ws.on("message")` for upstream: stdin injection (the CLI-mode textarea send)
+  and `{cols, rows}` resize reports → `pty.resize()`.
+- On (re)subscribe, replay the gateway-side xterm `serialize`-addon buffer so a
+  reconnecting browser gets a populated terminal.
+
+Chat mode keeps using the existing broadcast `/ws` + `session:delta` — that path
+is sound and unchanged.
 
 ### Component: transcript tailer
 
 `packages/jimmy/src/engines/transcript-tail.ts`. Given a `transcript_path` (from
-the `SessionStart` hook), tails the JSONL and maps appended lines to `StreamDelta`:
-- `assistant` message text block → `{ type: "text", content }`
+the `SessionStart` hook), tails the JSONL and maps appended lines to `StreamDelta`,
+emitting **exactly the delta shapes the web Chat UI already consumes**
+(`chat-pane.tsx` handles `text`, `text_snapshot`, `tool_use`, `tool_result`):
+- `assistant` message text block → `{ type: "text", content }` **and** a
+  `{ type: "text_snapshot", content }` with the full accumulated text — web Chat
+  mode relies on `text_snapshot` to self-correct dropped deltas; omitting it
+  regresses Chat mode.
 - `tool_use` block → `{ type: "tool_use", toolName }`
 - `user` message `tool_result` block → `{ type: "tool_result" }`
 
-Block-level granularity. Used by **headless surfaces** to drive Jinn's existing
-"thinking…" / tool-use UI and reactions. Stops on the `Stop` hook. Web chat does
-not need it for rendering (xterm.js shows the TUI directly) but may use it as a
-non-xterm fallback view.
+Block-level granularity. Used by **all structured-channel consumers** — connectors,
+cron, and the web UI's "Chat" mode — to drive Jinn's existing "thinking…" /
+tool-use UI and reactions. Stops on the `Stop` hook. CLI mode does not need it
+(xterm.js shows the TUI directly).
 
 ### Component: PTY lifecycle manager
 
 `packages/jimmy/src/engines/pty-lifecycle.ts`. Gateway-side. Owns every live
-`claude` PTY process keyed by Jinn session id, and decides — on every relevant
-event — whether each PTY should stay alive or be killed.
+`claude` PTY process **keyed by `session.id`**, and decides — on every relevant
+event — whether each PTY should stay alive or be killed. It also owns each
+session's `--settings` file lifetime.
+
+**Keying — `session.id`, not `sessionKey`.** The `SessionQueue` serializes turns
+by `sessionKey`, but `sessionKey` is not unique (`getSessionBySessionKey` does
+`ORDER BY last_activity DESC LIMIT 1`; `duplicateSession` can collide keys). If
+the lifecycle manager keyed on `sessionKey`, two turns for what the queue thinks
+are different sessions could inject into one warm PTY's stdin concurrently →
+interleaved bracketed-paste → corrupted prompt. **Mandate: the lifecycle manager
+keys on `session.id`, and the engine refuses/serializes a second `run()` for a
+session whose PTY is mid-turn** (belt-and-suspenders over the queue).
 
 **A PTY stays alive if ANY of:**
 1. **A turn is in progress** — always alive until the `Stop` hook fires.
 2. **KEEP ALIVE is set** for the session — an explicit per-session opt-in
    (config field / web UI control). The PTY stays warm after the turn so
    follow-up turns inject via stdin instead of respawning + `--resume`.
+   **Cron- and connector-originated sessions are KEEP-ALIVE-ineligible** — only
+   web-viewed sessions get persistent warmth; otherwise a recurring cron job
+   leaks one PTY per run.
 3. **Grace period** — the session was viewed in the web UI within the last
-   N minutes (default ~5). Keeps recently-viewed chats hot so switching back is
-   instant.
+   N minutes (default ~5). Keeps recently-viewed chats hot.
 
-Otherwise the PTY is killed. The default for a session started by cron, a
-connector, or a one-off web message — no KEEP ALIVE, not currently viewed — is
-**kill once the turn finishes**; the next turn respawns with `--resume`.
+Otherwise the PTY is killed. The default — no KEEP ALIVE, not currently viewed —
+is **kill once the turn finishes**; the next turn respawns with `--resume`.
+
+**A PTY is force-killed (`releaseSession(id)`) on:** session delete
+(`DELETE /api/sessions/:id`, batch-delete), reset (`/api/sessions/:id/reset`,
+the `/new` command — note `SessionManager.resetSession` does *not* kill the
+engine today, a gap to fix), engine change (the `engineOverride`/`engineSessions`
+swap between `claude` and `codex` orphans a warm Claude PTY), `isDeadSessionError`,
+and fork (see below). Every one of these call sites must route through
+`releaseSession(id)`.
+
+**Global PTY cap.** Cron has no concurrency limit — N jobs at the same minute →
+N concurrent spawns. The manager enforces a hard cap on total live PTYs; over the
+cap, new turns queue rather than spawn.
+
+**Boot reconciliation.** After a gateway restart there are no PTYs, but the DB may
+still say `running` (`recoverStaleSessions` flips those to `interrupted`). The
+manager also reaps orphan `claude`/relay pids recorded in `gateway.json` from a
+prior crashed run.
+
+**Org hot-reload.** `onOrgChange` can change an employee's persona / `cliFlags`.
+A warm PTY then runs a stale `--append-system-prompt`. Decision: kill warm PTYs
+for affected employees on `onOrgChange` (persona changes take effect on next
+spawn).
 
 **Events that re-evaluate a PTY's fate:** turn end (`Stop` hook), KEEP ALIVE
-toggled, web UI view/unview, grace-period timer expiry, idle timeout (a hard cap
-even on KEEP ALIVE sessions, e.g. 30 min), gateway shutdown (`killAll`).
+toggled, web UI view/unview, grace-period timer expiry, idle timeout (hard cap
+even on KEEP ALIVE, e.g. 30 min), `releaseSession` triggers above, `onOrgChange`,
+gateway shutdown (`killAll` delegates here).
 
 **Warm-PTY reuse.** When the engine asks for a process and a warm one exists, it
-is reused (stdin injection). This is what makes KEEP ALIVE and the grace period
-fast — no `--resume` history reload, no TUI re-render flicker between turns.
+is reused (stdin injection) — no `--resume` history reload, no TUI re-render
+flicker between turns.
+
+### Component: fork
+
+`sessions/fork.ts`'s `forkClaudeSession` currently shells out
+`claude --resume <id> --fork-session --print -p …` — i.e. **headless**, which
+post-June-15 bills against the Agent-SDK credit pool this whole spec exists to
+avoid. Also `--resume` on an id held open by a warm PTY can conflict on Claude's
+transcript file lock. Fork must: (a) `releaseSession(id)` on the source first,
+then (b) fork via the interactive engine (`--fork-session` without `-p`, in a
+PTY) so it also bills as `cli`. The forked session's first turn then spawns fresh
+against the new id.
 
 ### Component: web chat — Chat ↔ CLI toggle
 
-The web UI keeps its existing **per-session Chat ↔ CLI toggle**. Both modes
-render the *same* TUI-backed session; the toggle only changes the consumer. The
-choice is **per-session, persisted in `localStorage`** (keyed by Jinn session id).
+**Current state (corrected from audit).** A Chat/CLI toggle *exists* in
+`chat/page.tsx` — but it is ephemeral `useState` (`viewMode`), force-reset to
+`'chat'` on every session switch, and **not persisted**. Today "CLI mode" renders
+`CliTranscript`, a one-shot `GET /api/sessions/:id/transcript` rendered as styled
+HTML — **not a live terminal**. `xterm.js` / `node-pty` are not dependencies
+anywhere in the web package. So this work is: (a) make the toggle **per-session,
+persisted in `localStorage`** (drop the reset-on-switch logic; use the existing
+`jinn-<key>-<sessionId>` localStorage pattern from `conversations.ts`), and
+(b) **replace `CliTranscript`** with a live xterm.js view. `getSessionTranscript`
+can stay as a non-xterm fallback.
+
+Both modes render the *same* TUI-backed session; the toggle only changes the
+consumer.
 
 **"Chat" mode** — Jinn's own chat UI, the existing component, rendered from the
 structured channel (`Stop` hook + transcript tailer) exactly as connectors and
@@ -228,10 +377,10 @@ cron consume it. No xterm.js. This is the default and the lighter-weight mode.
 
 **"CLI" mode** — `xterm.js` attached to the raw PTY byte stream:
 - *Gateway side.* The session's PTY (kept warm by the lifecycle manager while the
-  chat is viewed) has its stdout streamed over the existing WebSocket. An xterm
-  `serialize`-addon buffer is kept gateway-side for reconnect replay.
-  `CLAUDE_CODE_NO_FLICKER` is enabled for this session (fullscreen mode → discrete
-  bottom slot).
+  chat is viewed) streams stdout over the **dedicated `/ws/pty/:sessionId`
+  channel** (not the global broadcast `/ws` — see gateway WebSocket component).
+  An xterm `serialize`-addon buffer is kept gateway-side for reconnect replay.
+  `CLAUDE_CODE_NO_FLICKER` is already on for every session.
 - *Browser side.* `xterm.js` renders PTY stdout. A native `<textarea>` is
   absolutely positioned over the bottom region of the terminal (CSS overlay),
   covering the TUI's own input box. The user types in the textarea (instant,
@@ -246,33 +395,105 @@ cron consume it. No xterm.js. This is the default and the lighter-weight mode.
   over- or under-crops. The overlay treats the terminal as an opaque black box,
   which is what survives Claude Code version churn.
 
-**Snappy chat switching.** The web frontend keeps the UI state of recently-viewed
-sessions mounted/cached for a few minutes (both the Chat-mode component state and
-the CLI-mode xterm.js instance), instead of tearing down on every switch. This
-pairs with the lifecycle manager's grace-period keep-alive: switching back to a
-recent chat is instant on both the UI and the process side. After the grace
+**Snappy chat switching.** Today `ChatPane` is a *single* instance keyed by
+`sessionId`; switching wipes `messages`/`streamingText` and refetches. To keep
+recently-viewed chats instant, render **N `<ChatPane>` instances** (one per
+recent tab, `display:none` for inactive) or a keep-alive wrapper, instead of one
+that remounts. Needs a `lastViewedAt` field added to `ChatTab` (`use-chat-tabs.ts`
+persists tab metadata but has no timestamps) to pick the "recent N". Backgrounded
+panes should rely on the WS delta stream, **not** React Query — `use-query-
+invalidation.ts` invalidates `sessions.detail(id)` on every `session:completed`,
+which would refetch across all warm panes. Keep N smaller than `MAX_TABS` (12).
+
+This pairs with the lifecycle manager's grace-period keep-alive: switching back to
+a recent chat is instant on both the UI and the process side. After the grace
 window, the cached UI state and the warm PTY are both released.
+
+### Component: cost & turn tracking
+
+**This is a blocker, not a nicety.** `claude -p --output-format json` returns
+`total_cost_usd`; the `Stop` hook payload does **not**. Today `result.cost` feeds
+`accumulateSessionCost`, the cost dashboard, org cost rollups (`notifyParentSession`,
+`session:completed`), and — critically — **`checkBudget`, which gates whether a
+session is allowed to run at all** (`manager.ts:291-314`). If cost is silently 0,
+budget enforcement becomes a no-op.
+
+Plan:
+- Primary: parse `usage` (input/output/cache tokens) from the assistant lines of
+  the **transcript JSONL** and compute cost via Jinn's existing model-cost tables
+  (`gateway/costs.ts`, `additionalModelCostsCache`).
+- Cross-check / fallback: `~/.claude.json` → `projects[<cwd>].lastCost` /
+  `lastModelUsage` (per-project, last run).
+- The interactive `EngineResult` populates `cost` from this and `numTurns: ≥1`.
+- If neither source proves reliable in validation: **explicitly disable budget
+  enforcement in interactive mode with a loud startup warning** — never let it
+  silently pass. This decision must be made before step 3 of the migration.
+
+Note `runWebSession` never calls `accumulateSessionCost` today (only the manager's
+`runSession` does) — web-session cost surfaces only via the `session:completed`
+payload. Fixing the cost source fixes both paths.
+
+### Component: rate-limit detection (interactive)
+
+Another blocker the original draft under-scoped. `detectRateLimit` /
+`EngineRateLimitInfo` / `recordClaudeRateLimit` / the `waiting`-status retry loop
+/ Codex fallback / `isLikelyNearClaudeUsageLimit` preflight are **100% dependent
+on `claude -p`'s structured `rate_limit_event` JSON**, which interactive mode
+never emits. Left alone, the entire rate-limit machinery silently goes dark —
+sessions just hang or error.
+
+The interactive engine must reconstruct an `EngineRateLimitInfo` so the existing
+`manager.ts` / `api.ts` wait-retry-fallback logic keeps working unchanged. Source
+options, to be settled in validation:
+- Tail the transcript JSONL for the rate-limit assistant/system marker.
+- Scan the PTY byte stream for the TUI's rate-limit banner.
+- A `Notification` hook may carry usage-limit events — check.
+
+Until this is built, interactive mode must at minimum surface a rate-limited turn
+as a clear `error` (not a hang) so the watchdog and UI behave.
+
+### Component: configuration
+
+`engines.claude` (`shared/types.ts`) gains `mode?: "headless" | "interactive"`,
+`keepAlive?: boolean`, `idleTimeoutMs?`, `graceWindowMs?`. Caveats from audit:
+- `loadConfig()` does **no validation or defaulting** — `mode` will be `undefined`
+  for every existing user. Default to `"headless"` **at the read site**, and treat
+  a garbage value as `"headless"` rather than throwing. `cli/setup.ts`'s
+  `DEFAULT_CONFIG` emits `mode: headless` explicitly for new installs.
+- Hot-reload does **not** reach the engine: `SessionManager` captures `config` by
+  value with no setter, and the engine instance is created once at gateway boot.
+  **Decision for v1: `engines.claude.mode` and `gateway.port` are restart-only**
+  — documented, not silently ignored. (A later version can add a config setter +
+  engine swap.) Other knobs (`keepAlive`, timeouts) can be read live.
 
 ### Component: trust pre-seeding
 
-On gateway startup, ensure `~/.claude.json` →
-`projects[realpath(JINN_HOME)].hasTrustDialogAccepted = true` (and
-`hasCompletedProjectOnboarding = true`). Idempotent. `realpath` is mandatory
-(the `/tmp` → `/private/tmp` gotcha). Jinn runs all engine processes with
-`cwd: JINN_HOME` today, so this is a single path.
+On gateway startup, ensure the **real** `~/.claude.json` (the user's home, *not*
+the existing `$JINN_HOME/.claude/settings.local.json` that `cli/setup.ts` writes)
+has `projects[realpath(JINN_HOME)].hasTrustDialogAccepted = true` and
+`hasCompletedProjectOnboarding = true`. Idempotent, atomic write. `realpath` is
+mandatory (the `/tmp` → `/private/tmp` gotcha). Jinn runs all engine processes
+with `cwd: JINN_HOME` today (`manager.ts` hard-codes it), so this is a single
+path.
 
 ## Data Flow
 
 **Connector / cron turn (e.g. a Slack message):**
 1. `SessionManager.runSession` calls `engine.run(opts)` (unchanged call site).
-2. The engine seeds trust, writes the per-session settings file, and asks the
-   lifecycle manager for a process: warm PTY → inject prompt via stdin; otherwise
-   spawn `claude --resume <id> "<prompt>" … --settings <file>` in a PTY.
-3. `SessionStart` hook → gateway records transcript path → transcript tailer starts.
-4. Tailer emits `tool_use` / `text` deltas → `onStream` → existing reaction/typing UI.
-5. `Stop` hook → gateway resolves `run()` with `last_assistant_message`.
-6. Engine returns `EngineResult`; hands the PTY to the lifecycle manager, which
-   kills it (default) or keeps it warm (KEEP ALIVE). Rest of `runSession` unchanged.
+2. The engine writes the per-session settings file (if not already present for a
+   warm PTY) and asks the lifecycle manager for a process: warm PTY → inject
+   prompt via stdin; otherwise spawn `claude --resume <id> "<prompt>" …` in a PTY.
+   (Trust is already seeded — done once at gateway startup.)
+3. The engine registers its pending resolver, then `SessionStart` hook → gateway
+   records Claude session id + transcript path → transcript tailer starts.
+   (Hook payloads arriving before the resolver is registered are buffered.)
+4. Tailer emits `text` / `text_snapshot` / `tool_use` deltas → `onStream` →
+   existing reaction/typing UI.
+5. `Stop` hook → gateway resolves `run()` with `last_assistant_message` (only
+   once both SessionStart id and Stop are seen). A watchdog covers a missed hook.
+6. Engine returns `EngineResult` (with synthesized `numTurns`, cost from the cost
+   component); hands the PTY to the lifecycle manager, which kills it (default,
+   incl. all cron/connector turns) or keeps it warm. Rest of `runSession` unchanged.
 
 **Web chat turn:**
 1. User sends a message from the web UI. Same `run()` path as above — the
@@ -315,39 +536,65 @@ On gateway startup, ensure `~/.claude.json` →
 - **"Review hooks" prompt.** `--settings` with hooks *could* trigger a review
   prompt that blocks a non-interactive driver. The POC did not hit it with
   `--dangerously-skip-permissions` — but validate across versions.
+- **Orphan PTYs on crash.** Warm PTYs (and their `claude`/MCP children) outlive a
+  *crashed* gateway — `cleanup()` only runs on graceful SIGTERM. Mitigation: pids
+  in `gateway.json`, reaped on next boot. `node-pty`'s process-group handling
+  differs from today's `detached`+`process.kill(-pid)`; verify children are reaped.
+- **Wedged sessions on a missed `Stop` hook.** With no process-exit fallback, a
+  dropped hook would hang `run()`, the queue slot, heartbeats, and reactions. The
+  turn-timeout watchdog is the mitigation — it must be reliable.
+- **Cost-blind budgets.** Until cost tracking is validated (see component),
+  `checkBudget` could silently pass everything. Migration step 3 is gated on this.
 
 ## Migration Path
 
-1. Add `InteractiveClaudeEngine` alongside `ClaudeEngine`. New config key
-   `engines.claude.mode: "headless" | "interactive"` (default stays `headless`
-   until validated).
-2. Land the hook relay script, `/api/internal/hook` endpoint, settings-file
-   writer, trust pre-seeding, and the **PTY lifecycle manager** (start with
-   kill-after-turn only — KEEP ALIVE and grace period come in step 4).
-3. Switch **connectors and cron** to `interactive` — the straightforward `run()`
-   replacement. Validate billing on the Anthropic usage dashboard.
-4. Web UI: wire the per-session **Chat ↔ CLI toggle** (localStorage), the CLI
-   mode (xterm.js + overlay), the **KEEP ALIVE** control, the lifecycle manager's
-   **grace-period** keep-alive, and the frontend's recently-viewed UI-state cache.
-5. Keep `ClaudeEngine` (`claude -p`) as a selectable fallback for users who
+0. **Validation spike** — resolve the Open Questions below that gate the design:
+   `--resume "<prompt>"` auto-submit, bracketed-paste follow-ups, `--effort` /
+   `--chrome` in interactive mode, ARG_MAX for the system prompt, and the cost &
+   rate-limit data sources. The design has known-unknowns; settle them first.
+1. Add `InteractiveClaudeEngine` alongside `ClaudeEngine`. Config key
+   `engines.claude.mode` (default `headless`, restart-only). `gateway.json`
+   writer. The turn-completion contract (SessionStart+Stop, watchdog, hook-buffer,
+   `numTurns` synthesis), `isTurnRunning`, `kill()` settling the resolver.
+2. Land the hook relay script, `/api/internal/hook` endpoint (auth + loopback),
+   settings-file writer (atomic, PTY-lifetime), trust pre-seeding, transcript
+   tailer, and the **PTY lifecycle manager** (keyed on `session.id`; start with
+   kill-after-turn + `releaseSession` wired into delete/reset/engine-change;
+   KEEP ALIVE and grace period come in step 4).
+3. Build **cost & turn tracking** and **interactive rate-limit detection** — both
+   are blockers, not nice-to-haves. Then switch **connectors and cron** to
+   `interactive`. Validate billing on the Anthropic usage dashboard and confirm
+   `checkBudget` still trips.
+4. Web UI: dedicated `/ws/pty/:sessionId` channel; per-session **Chat ↔ CLI
+   toggle** (localStorage, drop reset-on-switch); replace `CliTranscript` with the
+   xterm.js + overlay live view; the **KEEP ALIVE** control; grace-period
+   keep-alive; multi-`ChatPane` recently-viewed cache (`lastViewedAt`).
+5. Fork: route `forkClaudeSession` through the interactive engine; `releaseSession`
+   the source PTY first.
+6. Keep `ClaudeEngine` (`claude -p`) as a selectable fallback for users who
    prefer API-key billing or if interactive mode regresses.
 
 ## Open Questions / Validation Steps
 
-These need a POC or live check before or during implementation:
+The **step 0 validation spike** must resolve these before the design is locked:
 
-- Confirm `claude --resume <id> "<prompt>"` auto-submits the prompt in
-  interactive mode (POC tested fresh sessions only).
-- Confirm bracketed-paste injection reliably submits follow-up turns in a
-  persistent process (paste-mode neutralizes `/`,`@`,`!` prefixes — verify).
-- Confirm `--settings` hooks never trigger a blocking "review hooks" prompt
-  under `--dangerously-skip-permissions`.
+- Confirm `claude --resume <id> "<prompt>"` auto-submits the prompt (POC tested
+  fresh sessions only).
+- Confirm bracketed-paste injection reliably submits follow-up turns in a warm
+  process (paste-mode should neutralize `/`,`@`,`!` prefixes — verify).
+- Confirm `--effort` and `--chrome` work in interactive mode (used on every turn).
+- Confirm the ~100 KB system prompt fits — via `--append-system-prompt` argv, or
+  must move into the `--settings` JSON (ARG_MAX).
+- **Cost source**: which of transcript `usage` / `~/.claude.json lastCost` is
+  reliable per-turn — and is it good enough for `checkBudget`?
+- **Rate-limit source**: does a `Notification` hook, the transcript, or the PTY
+  banner give a usable rate-limit signal?
+- Confirm the `Stop` hook fires on user-interrupted turns (`kill()` path); if not,
+  the watchdog + `kill()`-settles-resolver is the only safety net.
+- Confirm `--settings` hooks never trigger a blocking "review hooks" prompt under
+  `--dangerously-skip-permissions`, across `claude` versions.
 - Confirm `CLAUDE_CODE_NO_FLICKER` fullscreen output renders cleanly in xterm.js.
-- **Cost tracking gap.** `claude -p --output-format json` returns
-  `total_cost_usd`; the `Stop` hook payload does not. Determine where per-turn
-  cost/usage comes from in interactive mode (transcript `usage` fields?
-  `~/.claude.json` `lastCost` / `lastModelUsage`?) — `accumulateSessionCost`
-  depends on it.
-- Confirm the `Stop` hook fires on user-interrupted turns (`kill()` path).
+- Confirm Claude Code's settings merge keeps the `settings.local.json` permissions
+  allowlist alongside the per-session `--settings` file.
 - Measure transcript-tail visibility latency (100ms batched appends + fs flush).
-- `node-pty` prebuild availability on the gateway's target platforms.
+- `node-pty` prebuild availability + child-process reaping on target platforms.
