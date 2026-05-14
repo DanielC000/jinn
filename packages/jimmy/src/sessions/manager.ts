@@ -753,6 +753,10 @@ export class SessionManager {
       }
 
       if (mcpConfigPath) cleanupMcpConfigFile(session.id);
+      // NOTE: the interactive engine's per-session --settings file is intentionally
+      // NOT cleaned up here. A warm PTY survives across turns and re-reads that file
+      // on every hook invocation — its lifetime is owned by PtyLifecycleManager
+      // (onCleanup → cleanupSessionSettings), not the per-turn runSession lifecycle.
     }
   }
 
