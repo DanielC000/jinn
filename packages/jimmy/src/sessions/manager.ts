@@ -344,6 +344,7 @@ export class SessionManager {
         mcpConfigPath,
         attachments: attachments.length > 0 ? attachments : undefined,
         sessionId: session.id,
+        source: session.source,
       });
 
       const wasInterrupted = result.error?.startsWith("Interrupted");
@@ -372,7 +373,7 @@ export class SessionManager {
       if (rateLimit.limited) {
         recordClaudeRateLimit(rateLimit.resetsAt);
 
-        const strategy = this.config.sessions?.rateLimitStrategy ?? "fallback";
+        const strategy = this.config.sessions?.rateLimitStrategy ?? "wait";
 
         // Optional fallback: switch to GPT (Codex) while Claude resets
         if (session.engine === "claude" && strategy === "fallback") {
@@ -575,6 +576,7 @@ export class SessionManager {
               mcpConfigPath,
               attachments: attachments.length > 0 ? attachments : undefined,
               sessionId: session.id,
+              source: session.source,
             });
 
             const retryInterrupted = retryResult.error?.startsWith("Interrupted");

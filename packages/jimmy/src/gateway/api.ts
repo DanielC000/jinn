@@ -2113,6 +2113,7 @@ async function runWebSession(
       cliFlags: employee?.cliFlags,
       attachments: attachments?.length ? attachments : undefined,
       sessionId: currentSession.id,
+      source: currentSession.source,
       onStream: (delta) => {
         const now = Date.now();
         if (now - lastHeartbeatAt >= 2000) {
@@ -2147,7 +2148,7 @@ async function runWebSession(
 
     if (rateLimit.limited) {
       recordClaudeRateLimit(rateLimit.resetsAt);
-      const strategy = config.sessions?.rateLimitStrategy ?? "fallback";
+      const strategy = config.sessions?.rateLimitStrategy ?? "wait";
 
       // Optional fallback: switch to GPT (Codex) while Claude resets
       if (currentSession.engine === "claude" && strategy === "fallback") {
@@ -2340,6 +2341,7 @@ async function runWebSession(
             effortLevel,
             cliFlags: employee?.cliFlags,
             sessionId: currentSession.id,
+            source: currentSession.source,
             onStream: (delta) => {
               context.emit("session:delta", {
                 sessionId: currentSession.id,

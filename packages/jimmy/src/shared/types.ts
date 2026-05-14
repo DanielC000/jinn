@@ -41,6 +41,8 @@ export interface EngineRunOpts {
   onStream?: (delta: StreamDelta) => void;
   /** Unique Jinn session ID for tracking the spawned process. */
   sessionId?: string;
+  /** Session source ("cron", "web", "slack", …) — used by the interactive engine for lifecycle policy. */
+  source?: string;
 }
 
 export interface EngineResult {
@@ -384,7 +386,24 @@ export interface JinnConfig {
   gateway: { port: number; host: string; streaming?: boolean };
   engines: {
     default: "claude" | "codex" | "gemini";
-    claude: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
+    claude: {
+      bin: string;
+      model: string;
+      effortLevel?: string;
+      childEffortOverride?: string;
+      /** "headless" = claude -p (default, legacy). "interactive" = PTY-driven TUI. Restart-only. */
+      mode?: "headless" | "interactive";
+      /** Default KEEP ALIVE for sessions (web UI control overrides per-session). */
+      keepAlive?: boolean;
+      /** Hard idle cap for warm PTYs, ms. Default 1_800_000 (30m). */
+      idleTimeoutMs?: number;
+      /** Grace window for recently-viewed web sessions, ms. Default 300_000 (5m). */
+      graceWindowMs?: number;
+      /** Turn-completion watchdog timeout, ms. Default 600_000 (10m). */
+      turnTimeoutMs?: number;
+      /** Max concurrent live PTYs across all sessions. Default 8. */
+      maxLivePtys?: number;
+    };
     codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
     gemini?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
   };
@@ -403,7 +422,7 @@ export interface JinnConfig {
     maxDurationMinutes?: number;
     maxCostUsd?: number;
     interruptOnNewMessage?: boolean;
-    /** What to do when Claude hits a usage/rate limit. Default: "fallback" */
+    /** What to do when Claude hits a usage/rate limit. Default: "wait" (no automatic engine switch). Set to "fallback" to opt in to switching to Codex while Claude resets. */
     rateLimitStrategy?: "wait" | "fallback";
     /** Engine to use when rateLimitStrategy="fallback". Default: "codex" */
     fallbackEngine?: "codex";
