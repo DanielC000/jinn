@@ -11,6 +11,8 @@ export interface ChatTab {
   unread: boolean
   /** If true, this is a "pinned" tab (VS Code style) — won't be replaced by preview. */
   pinned?: boolean
+  /** Timestamp (ms) when this tab last became the active tab. Used for keep-alive cache ordering. */
+  lastViewedAt: number
 }
 
 const STORAGE_KEY = 'jinn-chat-tabs'
@@ -33,7 +35,19 @@ function clampState(state: TabState): TabState {
 function loadTabs(): TabState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return clampState(JSON.parse(raw))
+    if (raw) {
+      const parsed = clampState(JSON.parse(raw))
+      // Old persisted tabs won't have lastViewedAt — default to 0 so they sort last.
+      const tabs = parsed.tabs.map((t) => ({
+        ...t,
+        lastViewedAt: typeof t.lastViewedAt === 'number' ? t.lastViewedAt : 0,
+      }))
+      // Ensure the currently-active tab has a fresh-ish timestamp so it stays in the cache.
+      if (parsed.activeIndex >= 0 && parsed.activeIndex < tabs.length && tabs[parsed.activeIndex].lastViewedAt === 0) {
+        tabs[parsed.activeIndex] = { ...tabs[parsed.activeIndex], lastViewedAt: Date.now() }
+      }
+      return { tabs, activeIndex: parsed.activeIndex }
+    }
   } catch {}
   return { tabs: [], activeIndex: -1 }
 }
@@ -62,12 +76,16 @@ export function useChatTabs() {
    * - Otherwise, append a new preview tab.
    * The `pinned` field on the incoming tab is respected — if true, it opens pinned.
    */
-  const openTab = useCallback((tab: ChatTab) => {
+  const openTab = useCallback((incoming: Omit<ChatTab, 'lastViewedAt'>) => {
+    const tab: ChatTab = { ...incoming, lastViewedAt: Date.now() }
     setState((current) => {
-      // Already open? Just switch to it — keep existing label/status
+      // Already open? Just switch to it — keep existing label/status, refresh lastViewedAt
       const existing = current.tabs.findIndex((t) => t.sessionId === tab.sessionId)
       if (existing >= 0) {
-        return { ...current, activeIndex: existing }
+        const nextTabs = current.tabs.map((t, i) =>
+          i === existing ? { ...t, lastViewedAt: tab.lastViewedAt } : t
+        )
+        return { tabs: nextTabs, activeIndex: existing }
       }
 
       // If incoming tab is not explicitly pinned, replace the existing preview tab
@@ -126,7 +144,10 @@ export function useChatTabs() {
   const switchTab = useCallback((index: number) => {
     setState((current) => {
       if (index < 0 || index >= current.tabs.length) return current
-      return { ...current, activeIndex: index }
+      const nextTabs = current.tabs.map((t, i) =>
+        i === index ? { ...t, lastViewedAt: Date.now() } : t
+      )
+      return { tabs: nextTabs, activeIndex: index }
     })
   }, [tabs.length])
 
@@ -158,14 +179,22 @@ export function useChatTabs() {
   const nextTab = useCallback(() => {
     setState((current) => {
       if (current.tabs.length === 0) return current
-      return { ...current, activeIndex: (current.activeIndex + 1 + current.tabs.length) % current.tabs.length }
+      const nextActive = (current.activeIndex + 1 + current.tabs.length) % current.tabs.length
+      const nextTabs = current.tabs.map((t, i) =>
+        i === nextActive ? { ...t, lastViewedAt: Date.now() } : t
+      )
+      return { tabs: nextTabs, activeIndex: nextActive }
     })
   }, [tabs.length])
 
   const prevTab = useCallback(() => {
     setState((current) => {
       if (current.tabs.length === 0) return current
-      return { ...current, activeIndex: (current.activeIndex - 1 + current.tabs.length) % current.tabs.length }
+      const nextActive = (current.activeIndex - 1 + current.tabs.length) % current.tabs.length
+      const nextTabs = current.tabs.map((t, i) =>
+        i === nextActive ? { ...t, lastViewedAt: Date.now() } : t
+      )
+      return { tabs: nextTabs, activeIndex: nextActive }
     })
   }, [tabs.length])
 

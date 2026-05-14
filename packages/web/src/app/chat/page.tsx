@@ -379,6 +379,20 @@ function ChatPage() {
 
   useKeyboardShortcuts(shortcuts)
 
+  // Keep-alive cache: keep the N most-recently-viewed sessions' ChatPanes mounted
+  // (hidden) so switching between them is instant. The active session is always
+  // included. N is kept well under MAX_TABS (12).
+  const KEEP_ALIVE_COUNT = 4
+  const keepAliveIds = useMemo(() => {
+    const ids = [...chatTabs.tabs]
+      .sort((a, b) => b.lastViewedAt - a.lastViewedAt)
+      .slice(0, KEEP_ALIVE_COUNT)
+      .map((t) => t.sessionId)
+    // Always include the active session, even if not in the top N.
+    if (selectedId && !ids.includes(selectedId)) ids.push(selectedId)
+    return ids
+  }, [chatTabs.tabs, selectedId])
+
   // When active tab changes, sync selectedId
   useEffect(() => {
     if (chatTabs.activeTab && chatTabs.activeTab.sessionId !== selectedId) {
@@ -543,25 +557,57 @@ function ChatPage() {
             "flex-1 overflow-hidden flex flex-col",
             mobileView === 'sidebar' ? 'hidden lg:flex' : 'flex'
           )}>
-            <ChatPane
-              sessionId={selectedId}
-              isActive={true}
-              onFocus={() => {}}
-              onSessionCreated={handleSessionCreated}
-              onSessionMetaChange={handleSessionMetaChange}
-              onRefresh={handleRefresh}
-              portalName={portalName}
-              subscribe={subscribe}
-              connectionSeq={connectionSeq}
-              skillsVersion={skillsVersion}
-              events={events}
-              viewMode={viewMode}
-              getOnboardingPrompt={stubSessionRef.current ? handleGetOnboardingPrompt : undefined}
-              isStubSession={stubSessionRef.current}
-              onStubCleared={handleStubCleared}
-              focusTrigger={focusTrigger}
-              onShortcutsClick={() => setShowShortcutOverlay(true)}
-            />
+            {/* Active pane: handles new-chat (sessionId=null) and the selected session.
+                Keyed by selectedId so switching to a non-cached session remounts cleanly. */}
+            <div
+              key={selectedId ?? '__new__'}
+              style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0 }}
+            >
+              <ChatPane
+                sessionId={selectedId}
+                isActive={true}
+                onFocus={() => {}}
+                onSessionCreated={handleSessionCreated}
+                onSessionMetaChange={handleSessionMetaChange}
+                onRefresh={handleRefresh}
+                portalName={portalName}
+                subscribe={subscribe}
+                connectionSeq={connectionSeq}
+                skillsVersion={skillsVersion}
+                events={events}
+                viewMode={viewMode}
+                getOnboardingPrompt={stubSessionRef.current ? handleGetOnboardingPrompt : undefined}
+                isStubSession={stubSessionRef.current}
+                onStubCleared={handleStubCleared}
+                focusTrigger={focusTrigger}
+                onShortcutsClick={() => setShowShortcutOverlay(true)}
+              />
+            </div>
+            {/* Keep-alive panes: recently-viewed sessions kept mounted but hidden so
+                switching back is instant. They self-filter WS events by their own
+                sessionId. Meta/created callbacks are intentionally omitted so a hidden
+                pane never clobbers the active session's parent state. */}
+            {keepAliveIds
+              .filter((id) => id !== selectedId)
+              .map((id) => (
+                <div
+                  key={id}
+                  style={{ display: 'none' }}
+                >
+                  <ChatPane
+                    sessionId={id}
+                    isActive={false}
+                    onFocus={() => {}}
+                    onRefresh={handleRefresh}
+                    portalName={portalName}
+                    subscribe={subscribe}
+                    connectionSeq={connectionSeq}
+                    skillsVersion={skillsVersion}
+                    events={events}
+                    viewMode={readViewMode(id)}
+                  />
+                </div>
+              ))}
           </div>
         </div>
       </div>
