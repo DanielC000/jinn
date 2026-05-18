@@ -4,12 +4,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
+import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, StreamDelta, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
-  initDb,
   listSessions,
   getSession,
   createSession,
@@ -43,8 +42,9 @@ import { logger } from "../shared/logger.js";
 import { getSttStatus, downloadModel, transcribe as sttTranscribe, resolveLanguages, WHISPER_LANGUAGES } from "../stt/stt.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { resolveEffort } from "../shared/effort.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
-import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
+import { detectRateLimit } from "../shared/rateLimit.js";
+import { getClaudeExpectedResetAt } from "../shared/usageAwareness.js";
+import { handleRateLimit } from "../sessions/rate-limit-handler.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
@@ -1022,95 +1022,6 @@ export async function handleApiRequest(
       return json(res, { status: "ok" });
     }
 
-    // GET /api/org/services — list all cross-department services
-    if (method === "GET" && pathname === "/api/org/services") {
-      const { scanOrg } = await import("./org.js");
-      const { buildServiceRegistry } = await import("./services.js");
-      const orgRegistry = scanOrg();
-      const services = buildServiceRegistry(orgRegistry);
-      const result = Array.from(services.values()).map((entry) => ({
-        name: entry.declaration.name,
-        description: entry.declaration.description,
-        provider: {
-          name: entry.provider.name,
-          displayName: entry.provider.displayName,
-          department: entry.provider.department,
-          rank: entry.provider.rank,
-        },
-      }));
-      return json(res, { services: result });
-    }
-
-    // POST /api/org/cross-request — route a service request to the provider
-    if (method === "POST" && pathname === "/api/org/cross-request") {
-      const parsed = await readJsonBody(req, res);
-      if (!parsed.ok) return;
-      const body = parsed.body as any;
-      const { fromEmployee, service, prompt, parentSessionId } = body;
-      if (!fromEmployee || !service || !prompt) {
-        return badRequest(res, "Missing required fields: fromEmployee, service, prompt");
-      }
-
-      const { scanOrg } = await import("./org.js");
-      const { resolveOrgHierarchy } = await import("./org-hierarchy.js");
-      const { buildServiceRegistry, buildRoutePath, resolveManagerChain } = await import("./services.js");
-
-      const orgRegistry = scanOrg();
-      const requester = orgRegistry.get(fromEmployee);
-      if (!requester) return notFound(res);
-
-      const services = buildServiceRegistry(orgRegistry);
-      const entry = services.get(service);
-      if (!entry) {
-        return json(res, { error: `Service "${service}" not found` }, 404);
-      }
-
-      const hierarchy = resolveOrgHierarchy(orgRegistry);
-      const route = buildRoutePath(fromEmployee, entry.provider.name, hierarchy);
-      const managers = resolveManagerChain(route, hierarchy);
-
-      const crossBrief = `## Cross-service request
-
-**From**: ${requester.displayName} (${requester.department})
-**Service**: ${service} — ${entry.declaration.description}
-
-### Request
-${prompt}
-
----
-Handle this as a priority request from a colleague.`;
-
-      const config = context.getConfig();
-      const session = createSession({
-        engine: entry.provider.engine || config.engines.default,
-        model: entry.provider.model || undefined,
-        source: "cross-request",
-        sourceRef: `cross:${fromEmployee}:${service}`,
-        connector: "web",
-        sessionKey: `cross:${Date.now()}`,
-        replyContext: { source: "cross-request" },
-        employee: entry.provider.name,
-        parentSessionId: parentSessionId || undefined,
-        prompt: crossBrief,
-        portalName: config.portal?.portalName,
-        title: `Cross-request: ${fromEmployee} → ${service}`,
-      });
-      insertMessage(session.id, "user", crossBrief);
-      logger.info(`Cross-request session created: ${session.id} (${fromEmployee} → ${service} → ${entry.provider.name})`);
-
-      return json(res, {
-        sessionId: session.id,
-        provider: {
-          name: entry.provider.name,
-          displayName: entry.provider.displayName,
-          department: entry.provider.department,
-        },
-        route,
-        managers: managers.map((m) => m.employee.name),
-        service,
-      }, 201);
-    }
-
     // GET /api/org/departments/:name/board
     params = matchRoute("/api/org/departments/:name/board", pathname);
     if (method === "GET" && params) {
@@ -1133,75 +1044,6 @@ Handle this as a priority request from a colleague.`;
       fs.writeFileSync(boardPath, JSON.stringify(body, null, 2));
       context.emit("board:updated", { department: p.name });
       return json(res, { status: "ok" });
-    }
-
-    // GET /api/skills/search?q=<query> — search the skills.sh registry
-    if (method === "GET" && pathname === "/api/skills/search") {
-      const query = url.searchParams.get("q") || "";
-      if (!query) return badRequest(res, "q parameter is required");
-      try {
-        const { execFileSync } = await import("node:child_process");
-        const output = execFileSync("npx", ["skills", "find", query], {
-          encoding: "utf-8",
-          timeout: 30000,
-        });
-        const results = parseSkillsSearchOutput(output);
-        return json(res, results);
-      } catch (err) {
-        const msg = err instanceof Error ? (err as any).stderr || err.message : String(err);
-        return json(res, { results: [], error: msg });
-      }
-    }
-
-    // GET /api/skills/manifest — return skills.json contents
-    if (method === "GET" && pathname === "/api/skills/manifest") {
-      const { readManifest } = await import("../cli/skills.js");
-      return json(res, readManifest());
-    }
-
-    // POST /api/skills/install — install a skill from skills.sh
-    if (method === "POST" && pathname === "/api/skills/install") {
-      const _parsed = await readJsonBody(req, res);
-      if (!_parsed.ok) return;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const body = _parsed.body as any;
-      const source = body.source;
-      if (!source) return badRequest(res, "source is required");
-      try {
-        const {
-          snapshotDirs, diffSnapshots, copySkillToInstance,
-          upsertManifest, extractSkillName, findExistingSkill,
-        } = await import("../cli/skills.js");
-        const { execFileSync } = await import("node:child_process");
-
-        const before = snapshotDirs();
-        execFileSync("npx", ["skills", "add", String(source), "-g", "-y"], {
-          encoding: "utf-8",
-          timeout: 60000,
-        });
-        const after = snapshotDirs();
-        const newDirs = diffSnapshots(before, after);
-
-        let skillName: string;
-        if (newDirs.length > 0) {
-          const installed = newDirs[0];
-          skillName = installed.name;
-          copySkillToInstance(installed.name, path.join(installed.dir, installed.name));
-        } else {
-          skillName = extractSkillName(source);
-          const existing = findExistingSkill(skillName);
-          if (existing) {
-            copySkillToInstance(existing.name, existing.dir);
-          } else {
-            return serverError(res, "Skill installed globally but could not locate the directory");
-          }
-        }
-        upsertManifest(skillName, source);
-        return json(res, { status: "installed", name: skillName });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return serverError(res, msg);
-      }
     }
 
     // GET /api/skills
@@ -1747,123 +1589,6 @@ Handle this as a priority request from a colleague.`;
       if (handled) return;
     }
 
-    // ── Goals ────────────────────────────────────────────────────────
-    // GET /api/goals
-    if (method === "GET" && pathname === "/api/goals") {
-      const { listGoals } = await import("./goals.js");
-      const db = initDb();
-      return json(res, listGoals(db));
-    }
-
-    // GET /api/goals/tree
-    if (method === "GET" && pathname === "/api/goals/tree") {
-      const { getGoalTree } = await import("./goals.js");
-      const db = initDb();
-      return json(res, getGoalTree(db));
-    }
-
-    // POST /api/goals
-    if (method === "POST" && pathname === "/api/goals") {
-      const _parsed = await readJsonBody(req, res);
-      if (!_parsed.ok) return;
-      const { createGoal } = await import("./goals.js");
-      const db = initDb();
-      const goal = createGoal(db, _parsed.body as Record<string, unknown>);
-      return json(res, goal, 201);
-    }
-
-    // GET /api/goals/:id
-    params = matchRoute("/api/goals/:id", pathname);
-    if (method === "GET" && params) {
-      const { getGoal } = await import("./goals.js");
-      const db = initDb();
-      const goal = getGoal(db, params.id);
-      if (!goal) return notFound(res);
-      return json(res, goal);
-    }
-
-    // PUT /api/goals/:id
-    params = matchRoute("/api/goals/:id", pathname);
-    if (method === "PUT" && params) {
-      const _parsed = await readJsonBody(req, res);
-      if (!_parsed.ok) return;
-      const { updateGoal } = await import("./goals.js");
-      const db = initDb();
-      const goal = updateGoal(db, params.id, _parsed.body as Record<string, unknown>);
-      if (!goal) return notFound(res);
-      return json(res, goal);
-    }
-
-    // DELETE /api/goals/:id
-    params = matchRoute("/api/goals/:id", pathname);
-    if (method === "DELETE" && params) {
-      const { deleteGoal } = await import("./goals.js");
-      const db = initDb();
-      deleteGoal(db, params.id);
-      return json(res, { status: "ok" });
-    }
-
-    // ── Costs ────────────────────────────────────────────────────────
-    // GET /api/costs/summary
-    if (method === "GET" && pathname === "/api/costs/summary") {
-      const { getCostSummary } = await import("./costs.js");
-      const rawPeriod = url.searchParams.get("period") ?? "month";
-      const period = (rawPeriod === "day" || rawPeriod === "week" || rawPeriod === "month") ? rawPeriod : "month";
-      return json(res, getCostSummary(period));
-    }
-
-    // GET /api/costs/by-employee
-    if (method === "GET" && pathname === "/api/costs/by-employee") {
-      const { getCostsByEmployee } = await import("./costs.js");
-      const rawPeriod = url.searchParams.get("period") ?? "month";
-      const period = (rawPeriod === "week") ? "week" : "month";
-      return json(res, getCostsByEmployee(period));
-    }
-
-    // ── Budgets ──────────────────────────────────────────────────────
-    // GET /api/budgets
-    if (method === "GET" && pathname === "/api/budgets") {
-      const { getBudgetStatus } = await import("./budgets.js");
-      const config = context.getConfig();
-      const budgetConfig = (config as any).budgets?.employees as Record<string, number> | undefined ?? {};
-      const employees = Object.keys(budgetConfig);
-      const statuses = employees.map((emp) => ({
-        employee: emp,
-        ...getBudgetStatus(emp, budgetConfig),
-      }));
-      return json(res, { employees: budgetConfig, statuses });
-    }
-
-    // PUT /api/budgets
-    if (method === "PUT" && pathname === "/api/budgets") {
-      const _parsed = await readJsonBody(req, res);
-      if (!_parsed.ok) return;
-      const body = _parsed.body as Record<string, unknown>;
-      let existing: Record<string, unknown> = {};
-      try {
-        existing = yaml.load(fs.readFileSync(CONFIG_PATH, "utf-8")) as Record<string, unknown> || {};
-      } catch { /* start fresh if unreadable */ }
-      const merged = deepMerge(existing, { budgets: { employees: body } });
-      fs.writeFileSync(CONFIG_PATH, yaml.dump(merged));
-      logger.info("Budget limits updated via API");
-      return json(res, { status: "ok" });
-    }
-
-    // POST /api/budgets/:employee/override
-    params = matchRoute("/api/budgets/:employee/override", pathname);
-    if (method === "POST" && params) {
-      const { overrideBudget } = await import("./budgets.js");
-      const config = context.getConfig();
-      const budgetConfig = (config as any).budgets?.employees as Record<string, number> | undefined ?? {};
-      return json(res, overrideBudget(params.employee, budgetConfig));
-    }
-
-    // GET /api/budgets/events
-    if (method === "GET" && pathname === "/api/budgets/events") {
-      const { getBudgetEvents } = await import("./budgets.js");
-      return json(res, getBudgetEvents());
-    }
-
     // POST /api/internal/hook — receive Claude Code turn hooks from the relay script
     if (method === "POST" && pathname === "/api/internal/hook") {
       if (!context.hookRegistry || !context.hookSecret) {
@@ -1887,52 +1612,6 @@ Handle this as a priority request from a colleague.`;
     logger.error(`API error: ${msg}`);
     return serverError(res, msg);
   }
-}
-
-/**
- * Parse the output of `npx skills find <query>` into structured results.
- *
- * Format:
- * ```
- * owner/repo@skill-name  <N> installs
- * └ https://skills.sh/owner/repo/skill-name
- * ```
- */
-function stripAnsi(str: string): string {
-  return str.replace(/\x1b\[[0-9;]*m/g, "");
-}
-
-function parseSkillsSearchOutput(
-  output: string,
-): Array<{ name: string; source: string; url: string; installs: number }> {
-  const results: Array<{ name: string; source: string; url: string; installs: number }> = [];
-  const lines = output.trim().split("\n");
-
-  for (let i = 0; i < lines.length; i++) {
-    const headerLine = stripAnsi(lines[i]).trim();
-    // Match "owner/repo@skill-name  <N> installs"
-    const headerMatch = headerLine.match(/^(\S+)\s+(\d+)\s+installs?$/);
-    if (!headerMatch) continue;
-
-    const source = headerMatch[1];
-    const installs = parseInt(headerMatch[2], 10);
-    const atIdx = source.lastIndexOf("@");
-    const name = atIdx > 0 ? source.slice(atIdx + 1) : source;
-
-    // Next line should be the URL
-    let url = "";
-    if (i + 1 < lines.length) {
-      const urlLine = stripAnsi(lines[i + 1]).trim();
-      const urlMatch = urlLine.match(/[└]\s*(https?:\/\/\S+)/);
-      if (urlMatch) {
-        url = urlMatch[1];
-        i++; // consume the URL line
-      }
-    }
-
-    results.push({ name, source, url, installs });
-  }
-  return results;
 }
 
 /**
@@ -2195,289 +1874,155 @@ async function runWebSession(
     const rateLimit = !wasInterrupted ? detectRateLimit(result) : { limited: false as const };
 
     if (rateLimit.limited) {
-      recordClaudeRateLimit(rateLimit.resetsAt);
-      const strategy = config.sessions?.rateLimitStrategy ?? "wait";
+      const emitDelta = (delta: StreamDelta) => {
+        context.emit("session:delta", {
+          sessionId: currentSession.id,
+          type: delta.type,
+          content: delta.content,
+          toolName: delta.toolName,
+        });
+      };
 
-      // Optional fallback: switch to GPT (Codex) while Claude resets
-      if (currentSession.engine === "claude" && strategy === "fallback") {
-        const fallbackName = config.sessions?.fallbackEngine ?? "codex";
-        const fallbackEngine = context.sessionManager.getEngine(fallbackName);
-        if (fallbackEngine) {
-          const { resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
-          const until = resumeAt ?? new Date(Date.now() + 6 * 60 * 60_000);
-          const syncSince = new Date().toISOString();
+      const outcome = await handleRateLimit({
+        session: currentSession,
+        prompt,
+        systemPrompt,
+        engineConfig,
+        effortLevel,
+        cliFlags: employee?.cliFlags,
+        attachments: attachments?.length ? attachments : undefined,
+        config,
+        engines: context.sessionManager.getEngines(),
+        employee,
+        engine,
+        rateLimit,
+        originalResult: result,
+        hooks: {
+          onFallbackStart: ({ resumeAt }) => {
+            const resumeText = resumeAt
+              ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+              : null;
+            const notificationText =
+              `⚠️ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}. Switching to GPT for now.`;
+            insertMessage(currentSession.id, "notification", notificationText);
+            context.emit("session:notification", { sessionId: currentSession.id, message: notificationText });
 
-          const resumeText = resumeAt
-            ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
-            : null;
+            notifyDiscordChannel(
+              `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} switching to GPT.`,
+            );
+          },
+          onFallbackStream: emitDelta,
+          onFallbackComplete: (fallbackResult) => {
+            if (fallbackResult.result) {
+              insertMessage(currentSession.id, "assistant", fallbackResult.result);
+            }
 
-          const notificationText =
-            `⚠️ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}. Switching to GPT for now.`;
-          insertMessage(currentSession.id, "notification", notificationText);
-          context.emit("session:notification", { sessionId: currentSession.id, message: notificationText });
-
-          const nextMeta = { ...(currentSession.transportMeta || {}) } as Record<string, unknown>;
-          const engineSessionsRaw = nextMeta.engineSessions;
-          const engineSessions = (engineSessionsRaw && typeof engineSessionsRaw === "object" && !Array.isArray(engineSessionsRaw))
-            ? { ...(engineSessionsRaw as Record<string, unknown>) }
-            : {};
-          if (currentSession.engineSessionId) {
-            engineSessions.claude = currentSession.engineSessionId;
-          }
-          nextMeta.engineSessions = engineSessions;
-          nextMeta.engineOverride = { originalEngine: "claude", originalEngineSessionId: currentSession.engineSessionId, until: until.toISOString(), syncSince };
-
-          updateSession(currentSession.id, {
-            engine: fallbackName,
-            transportMeta: nextMeta as any,
-            status: "running",
-            lastActivity: new Date().toISOString(),
-            lastError: resumeAt
-              ? `Claude usage limit — using GPT until ${resumeAt.toISOString()}`
-              : "Claude usage limit — using GPT temporarily",
-          });
-
-          notifyDiscordChannel(
-            `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} switching to GPT.`,
-          );
-
-          const fallbackConfig = config.engines.codex;
-          const fallbackEffort = resolveEffort(fallbackConfig, currentSession, employee);
-          const codexResume = typeof engineSessions.codex === "string" ? (engineSessions.codex as string) : undefined;
-          const history = getMessages(currentSession.id)
-            .filter((m) => m.role === "user" || m.role === "assistant")
-            .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
-          const historyText = history.slice(-12).join("\n\n");
-          const fallbackPrompt = codexResume
-            ? prompt
-            : `Continue this conversation and respond to the last USER message.\n\nConversation so far:\n\n${historyText}`;
-          const fallbackResult = await fallbackEngine.run({
-            prompt: fallbackPrompt,
-            resumeSessionId: codexResume,
-            systemPrompt,
-            cwd: JINN_HOME,
-            bin: fallbackConfig.bin,
-            model: currentSession.model ?? fallbackConfig.model,
-            effortLevel: fallbackEffort,
-            cliFlags: employee?.cliFlags,
-            sessionId: currentSession.id,
-            onStream: (delta) => {
-              context.emit("session:delta", {
-                sessionId: currentSession.id,
-                type: delta.type,
-                content: delta.content,
-                toolName: delta.toolName,
-              });
-            },
-          });
-
-          if (fallbackResult.result) {
-            insertMessage(currentSession.id, "assistant", fallbackResult.result);
-          }
-
-          // Persist Codex thread id so future fallbacks can resume it
-          const nextEngineSessions = { ...engineSessions };
-          if (fallbackResult.sessionId) {
-            nextEngineSessions.codex = fallbackResult.sessionId;
-          }
-          const metaAfter = { ...(getSession(currentSession.id)?.transportMeta || nextMeta) } as Record<string, unknown>;
-          metaAfter.engineSessions = nextEngineSessions;
-          updateSession(currentSession.id, { transportMeta: metaAfter as any });
-
-          const completedFallback = updateSession(currentSession.id, {
-            engineSessionId: fallbackResult.sessionId,
-            status: fallbackResult.error ? "error" : "idle",
-            lastActivity: new Date().toISOString(),
-            lastError: fallbackResult.error ?? null,
-          });
-          if (completedFallback) {
-            notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-          }
-
-          context.emit("session:completed", {
-            sessionId: currentSession.id,
-            employee: currentSession.employee || config.portal?.portalName || "Jinn",
-            title: currentSession.title,
-            result: fallbackResult.result,
-            error: fallbackResult.error || null,
-            cost: fallbackResult.cost,
-            durationMs: fallbackResult.durationMs,
-          });
-
-          return;
-        }
-      }
-
-      // Otherwise: wait until reset and retry automatically
-      const { delayMs, resumeAt } = computeNextRetryDelayMs(rateLimit.resetsAt);
-      const deadlineMs = computeRateLimitDeadlineMs(
-        rateLimit.resetsAt,
-        rateLimit.resetsAt ? 30 * 60_000 : 6 * 60 * 60_000,
-      );
-
-      const resumeText = resumeAt
-        ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
-        : null;
-
-      logger.info(
-        `Web session ${currentSession.id} hit Claude usage limit — will auto-retry ${resumeAt ? `at ${resumeAt.toISOString()}` : `in ${Math.round(delayMs / 1000)}s`}`,
-      );
-
-      // Send hardcoded Discord notification — does not depend on the LLM
-      notifyDiscordChannel(
-        `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
-      );
-
-      const notificationText =
-        `⏳ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""} — I'll continue automatically.`;
-      insertMessage(currentSession.id, "notification", notificationText);
-      context.emit("session:notification", { sessionId: currentSession.id, message: notificationText });
-
-      const waitingSession = updateSession(currentSession.id, {
-        ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
-        status: "waiting",
-        lastActivity: new Date().toISOString(),
-        lastError: resumeAt
-          ? `Claude usage limit — resumes ${resumeAt.toISOString()}`
-          : "Claude usage limit — waiting for reset",
-      });
-
-      // Notify parent session about rate limit (fire-and-forget)
-      notifyRateLimited(
-        (waitingSession ?? { ...currentSession, status: "waiting" }) as Session,
-        resumeAt
-          ? resumeAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
-          : undefined,
-      );
-
-      context.emit("session:rate-limited", {
-        sessionId: currentSession.id,
-        employee: currentSession.employee,
-        error: result.error,
-        resetsAt: rateLimit.resetsAt ?? null,
-      });
-
-      // Keep lastActivity fresh while waiting (UI / status endpoints)
-      const heartbeat = setInterval(() => {
-        updateSession(currentSession.id, { status: "waiting", lastActivity: new Date().toISOString() });
-      }, 60_000);
-
-      try {
-        let attempt = 0;
-        let nextDelayMs = delayMs;
-
-        while (Date.now() < deadlineMs) {
-          await new Promise<void>((r) => setTimeout(r, nextDelayMs));
-          attempt++;
-
-          // Check session still exists and hasn't been cancelled
-          const current = getSession(currentSession.id);
-          if (!current || current.status === "error") {
-            logger.info(`Web session ${currentSession.id} stopped while waiting for usage reset`);
-            return;
-          }
-
-          logger.info(`Web session ${currentSession.id} retrying after usage limit (attempt ${attempt})`);
-
-          const retryResult = await engine.run({
-            prompt,
-            resumeSessionId: current.engineSessionId ?? undefined,
-            systemPrompt,
-            cwd: JINN_HOME,
-            bin: engineConfig.bin,
-            model: current.model ?? engineConfig.model,
-            effortLevel,
-            cliFlags: employee?.cliFlags,
-            sessionId: currentSession.id,
-            source: currentSession.source,
-            onStream: (delta) => {
-              context.emit("session:delta", {
-                sessionId: currentSession.id,
-                type: delta.type,
-                content: delta.content,
-                toolName: delta.toolName,
-              });
-            },
-          });
-
-          const retryInterrupted = retryResult.error?.startsWith("Interrupted");
-          const retryRateLimit = !retryInterrupted ? detectRateLimit(retryResult) : { limited: false as const };
-
-          if (retryRateLimit.limited) {
-            recordClaudeRateLimit(retryRateLimit.resetsAt);
-            logger.info(`Web session ${currentSession.id} still rate limited (attempt ${attempt})`);
-
-            const next = computeNextRetryDelayMs(retryRateLimit.resetsAt);
-            nextDelayMs = next.delayMs;
-
-            updateSession(currentSession.id, {
-              ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
-              status: "waiting",
+            const completedFallback = updateSession(currentSession.id, {
+              engineSessionId: fallbackResult.sessionId,
+              status: fallbackResult.error ? "error" : "idle",
               lastActivity: new Date().toISOString(),
-              lastError: next.resumeAt
-                ? `Claude usage limit — resumes ${next.resumeAt.toISOString()}`
-                : "Claude usage limit — waiting for reset",
+              lastError: fallbackResult.error ?? null,
+            });
+            if (completedFallback) {
+              notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+            }
+
+            context.emit("session:completed", {
+              sessionId: currentSession.id,
+              employee: currentSession.employee || config.portal?.portalName || "Jinn",
+              title: currentSession.title,
+              result: fallbackResult.result,
+              error: fallbackResult.error || null,
+              cost: fallbackResult.cost,
+              durationMs: fallbackResult.durationMs,
+            });
+          },
+          onWaitingStart: ({ resumeAt }) => {
+            const resumeText = resumeAt
+              ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+              : null;
+
+            // Send hardcoded Discord notification — does not depend on the LLM
+            notifyDiscordChannel(
+              `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
+            );
+
+            const notificationText =
+              `⏳ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""} — I'll continue automatically.`;
+            insertMessage(currentSession.id, "notification", notificationText);
+            context.emit("session:notification", { sessionId: currentSession.id, message: notificationText });
+
+            // Notify parent session about rate limit (fire-and-forget)
+            const waitingSession = getSession(currentSession.id);
+            notifyRateLimited(
+              (waitingSession ?? { ...currentSession, status: "waiting" }) as Session,
+              resumeAt
+                ? resumeAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+                : undefined,
+            );
+
+            context.emit("session:rate-limited", {
+              sessionId: currentSession.id,
+              employee: currentSession.employee,
+              error: result.error,
+              resetsAt: rateLimit.resetsAt ?? null,
+            });
+          },
+          onRetryStream: emitDelta,
+          onRetrySuccess: (retryResult) => {
+            // Usage limit cleared — handle result
+            if (retryResult.result) {
+              insertMessage(currentSession.id, "assistant", retryResult.result);
+            }
+
+            const completedAfterRetry = updateSession(currentSession.id, {
+              ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
+              status: retryResult.error ? "error" : "idle",
+              lastActivity: new Date().toISOString(),
+              lastError: retryResult.error ?? null,
             });
 
-            continue;
-          }
+            if (completedAfterRetry) {
+              notifyRateLimitResumed(completedAfterRetry);
+              notifyDiscordChannel(
+                `✅ Claude usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
+              );
+              notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+            }
 
-          // Usage limit cleared — handle result
-          if (retryResult.result) {
-            insertMessage(currentSession.id, "assistant", retryResult.result);
-          }
-
-          const completedAfterRetry = updateSession(currentSession.id, {
-            ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
-            status: retryResult.error ? "error" : "idle",
-            lastActivity: new Date().toISOString(),
-            lastError: retryResult.error ?? null,
-          });
-
-          if (completedAfterRetry) {
-            notifyRateLimitResumed(completedAfterRetry);
+            context.emit("session:completed", {
+              sessionId: currentSession.id,
+              employee: currentSession.employee || config.portal?.portalName || "Jinn",
+              title: currentSession.title,
+              result: retryResult.result,
+              error: retryResult.error || null,
+              cost: retryResult.cost,
+              durationMs: retryResult.durationMs,
+            });
+          },
+          onTimeout: () => {
             notifyDiscordChannel(
-              `✅ Claude usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
+              `❌ Claude usage limit did not clear in time. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} has been stopped.`,
             );
-            notifyParentSession(completedAfterRetry, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-          }
+            const erroredSession = updateSession(currentSession.id, {
+              status: "error",
+              lastActivity: new Date().toISOString(),
+              lastError: "Claude usage limit did not clear in time",
+            });
+            if (erroredSession) {
+              notifyParentSession(erroredSession, { error: "Claude usage limit did not clear in time" }, { alwaysNotify: employee?.alwaysNotify });
+            }
+            context.emit("session:completed", {
+              sessionId: currentSession.id,
+              result: null,
+              error: "Claude usage limit did not clear in time",
+            });
+          },
+        },
+      });
 
-          context.emit("session:completed", {
-            sessionId: currentSession.id,
-            employee: currentSession.employee || config.portal?.portalName || "Jinn",
-            title: currentSession.title,
-            result: retryResult.result,
-            error: retryResult.error || null,
-            cost: retryResult.cost,
-            durationMs: retryResult.durationMs,
-          });
-
-          logger.info(`Web session ${currentSession.id} resumed after usage reset`);
-          return;
-        }
-
-        // Exhausted waiting window
-        notifyDiscordChannel(
-          `❌ Claude usage limit did not clear in time. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} has been stopped.`,
-        );
-        const erroredSession = updateSession(currentSession.id, {
-          status: "error",
-          lastActivity: new Date().toISOString(),
-          lastError: "Claude usage limit did not clear in time",
-        });
-        if (erroredSession) {
-          notifyParentSession(erroredSession, { error: "Claude usage limit did not clear in time" }, { alwaysNotify: employee?.alwaysNotify });
-        }
-        context.emit("session:completed", {
-          sessionId: currentSession.id,
-          result: null,
-          error: "Claude usage limit did not clear in time",
-        });
-        logger.warn(`Web session ${currentSession.id} exhausted usage limit retries`);
-        return;
-      } finally {
-        clearInterval(heartbeat);
-      }
+      void outcome; // outcome handled entirely via hooks
+      return;
     }
 
     // Persist the assistant response
