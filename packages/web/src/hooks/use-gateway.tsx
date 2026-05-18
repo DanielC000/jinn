@@ -28,6 +28,29 @@ interface GatewayContextValue {
 const GatewayContext = createContext<GatewayContextValue | null>(null);
 
 /**
+ * Events that still need to flow through the legacy `events` context array.
+ *
+ * Background: every consumer that destructures `events` re-renders on every
+ * event we push. Most consumers have been migrated to subscribe(); the
+ * remaining holdout is chat-pane.tsx, which forwards `events` to its
+ * children QueuePanel (filters `queue:updated`) and ChatInput → useStt
+ * (filters `stt:*`). We keep only those frames in the array so chat-pane
+ * doesn't re-render for every ping/keepalive/log/session-delta on the bus.
+ *
+ * Subscribers are unaffected — they still receive every event via subscribe().
+ */
+const EVENTS_ARRAY_PREFIXES = ["stt:"] as const;
+const EVENTS_ARRAY_EXACT = new Set<string>(["queue:updated"]);
+
+function shouldPushToEventsArray(event: string): boolean {
+  if (EVENTS_ARRAY_EXACT.has(event)) return true;
+  for (const prefix of EVENTS_ARRAY_PREFIXES) {
+    if (event.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/**
  * Opens ONE WebSocket per app and exposes its events via context.
  * All consumers (useGateway, NotificationProvider, etc.) read from this
  * single connection — never open their own.
@@ -42,7 +65,13 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const socket = createGatewaySocket(
       (event, payload) => {
-        setEvents((prev) => [...prev.slice(-99), { event, payload }]);
+        // Only mutate the shared events array for frames that one of the
+        // remaining events-array consumers actually filters for. Everything
+        // else is delivered exclusively through subscribe() below, which
+        // avoids waking every <ChatPane> on the page for unrelated frames.
+        if (shouldPushToEventsArray(event)) {
+          setEvents((prev) => [...prev.slice(-99), { event, payload }]);
+        }
 
         if (event === "skills:changed") {
           setSkillsVersion((prev) => prev + 1);
