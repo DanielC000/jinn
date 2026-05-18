@@ -9,7 +9,7 @@ import { ChatPane } from '@/components/chat/chat-pane'
 import { ShortcutOverlay } from '@/components/chat/shortcut-overlay'
 import { useChatTabs } from '@/hooks/use-chat-tabs'
 import { useKeyboardShortcuts, type ShortcutDef } from '@/hooks/use-keyboard-shortcuts'
-import { useDeleteSession, useDuplicateSession } from '@/hooks/use-sessions'
+import { useDeleteSession, useDuplicateSession, useSessions } from '@/hooks/use-sessions'
 import { clearIntermediateMessages } from '@/lib/conversations'
 import type { Message } from '@/lib/conversations'
 import { useSettings } from '@/app/settings-provider'
@@ -69,7 +69,9 @@ function ChatPage() {
   const portalName = settings.portalName ?? 'Jinn'
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [mobileView, setMobileView] = useState<'sidebar' | 'chat'>('sidebar')
-  const [sessionMeta, setSessionMeta] = useState<{ engine?: string; engineSessionId?: string; model?: string; title?: string; employee?: string } | null>(null)
+  // sessionMeta carries the sessionId it belongs to so the tab-label effect
+  // can ignore stale meta from a previous session mid-switch (title flash fix).
+  const [sessionMeta, setSessionMeta] = useState<{ sessionId: string; engine?: string; engineSessionId?: string; model?: string; title?: string; employee?: string } | null>(null)
   // Sibling sessions for the currently selected employee (empty if direct/single session)
   const [employeeSessions, setEmployeeSessions] = useState<Array<{ id: string; title?: string; lastActivity?: string; createdAt?: string }>>([])
   // When true, user explicitly started a new chat — don't auto-select first session
@@ -152,6 +154,7 @@ function ChatPage() {
   const chatTabs = useChatTabs()
   const deleteSessionMutation = useDeleteSession()
   const duplicateSessionMutation = useDuplicateSession()
+  const sessionsQuery = useSessions()
   const qc = useQueryClient()
   const [showShortcutOverlay, setShowShortcutOverlay] = useState(false)
   const sidebarOrderRef = useRef<SidebarOrder>({ sessionIds: [], employeeNames: [], employeeSessionMap: {} })
@@ -180,15 +183,75 @@ function ChatPage() {
     setTimeout(() => setCopiedField(null), 1500)
   }, [])
 
-  // Update tab label/status when session meta changes
-  const { updateTabStatus } = chatTabs
+  // Update tab label/status when session meta changes.
+  // Guarded by `sessionMeta.sessionId === selectedId` so we never cross-write
+  // the previous session's meta onto the newly active tab during a switch
+  // (ChatPane is `key={selectedId}` — it remounts and re-emits meta).
+  const { updateTabStatus, closeTabBySessionId, reconcileTabs } = chatTabs
   useEffect(() => {
     if (!selectedId || !sessionMeta) return
+    if (sessionMeta.sessionId !== selectedId) return
     updateTabStatus(selectedId, {
       label: sessionMeta.title || sessionMeta.employee || portalName,
       employeeName: sessionMeta.employee || undefined,
     })
   }, [selectedId, sessionMeta, portalName, updateTabStatus])
+
+  // Clear sessionMeta synchronously when the active session changes — the new
+  // ChatPane will repopulate it via onSessionMetaChange once it loads. This
+  // prevents the title-flash where the effect above would otherwise stamp the
+  // OLD session's title onto the NEW tab between switch and ChatPane mount.
+  useEffect(() => {
+    setSessionMeta((current) => (current && current.sessionId !== selectedId ? null : current))
+  }, [selectedId])
+
+  // Subscribe to session lifecycle events so chat tabs reflect real-time
+  // running/idle/error status, get their label updated on rename, and close
+  // automatically when the underlying session is deleted (e.g. from sidebar
+  // bulk-delete or another client). Without this, `status: 'running'` set by
+  // handleSessionCreated never flips back, leaving a stale blue dot.
+  useEffect(() => {
+    const unsub = subscribe((event: string, payload: unknown) => {
+      const p = (payload || {}) as { sessionId?: string; title?: string }
+      const sid = p.sessionId
+      if (!sid) return
+      switch (event) {
+        case 'session:started':
+          updateTabStatus(sid, { status: 'running' })
+          break
+        case 'session:completed':
+        case 'session:stopped':
+          updateTabStatus(sid, { status: 'idle' })
+          break
+        case 'session:error':
+          updateTabStatus(sid, { status: 'error' })
+          break
+        case 'session:deleted':
+          closeTabBySessionId(sid)
+          break
+        case 'session:updated':
+          // Gateway currently emits {sessionId} only — handle title defensively
+          // in case future emitters carry it. Stale labels after rename are
+          // also reconciled via the useSessions() effect below.
+          if (p.title) updateTabStatus(sid, { label: p.title })
+          break
+      }
+    })
+    return unsub
+  }, [subscribe, updateTabStatus, closeTabBySessionId])
+
+  // Reconcile persisted tabs against the authoritative sessions list:
+  //   - drop orphan tabs whose sessions were deleted while the app was closed
+  //     (or by another client before our WS reconnected)
+  //   - normalize stale `status: 'running'` (persists across reloads otherwise)
+  //   - pick up renames the WS event didn't carry a title for
+  useEffect(() => {
+    const sessions = sessionsQuery.data as
+      | Array<{ id: string; title?: string; status?: string; employee?: string }>
+      | undefined
+    if (!sessions) return
+    reconcileTabs(sessions)
+  }, [sessionsQuery.data, reconcileTabs])
 
   const handleEmployeeSessionsAvailable = useCallback(
     (sessions: Array<{ id: string; title?: string; lastActivity?: string; createdAt?: string }>) => {
@@ -284,8 +347,15 @@ function ChatPage() {
     }
   }, [selectedId, pendingUserMessage])
 
+  // Tag incoming meta with the sessionId it belongs to so consumers (e.g.
+  // the tab-label effect) can ignore stale meta from a previous session.
+  // We read selectedId via a ref so this callback stays stable.
+  const selectedIdRef = useRef<string | null>(selectedId)
+  useEffect(() => { selectedIdRef.current = selectedId }, [selectedId])
   const handleSessionMetaChange = useCallback((meta: { title?: string; employee?: string; engine?: string; engineSessionId?: string; model?: string }) => {
-    setSessionMeta(meta)
+    const sid = selectedIdRef.current
+    if (!sid) return
+    setSessionMeta({ sessionId: sid, ...meta })
   }, [])
 
   const handleRefresh = useCallback(() => {

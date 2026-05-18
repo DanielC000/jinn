@@ -187,13 +187,89 @@ export function useChatTabs() {
     })
   }, [])
 
+  /** Close the tab for a given sessionId (no-op if not open). */
+  const closeTabBySessionId = useCallback((sessionId: string) => {
+    setState((current) => {
+      const idx = current.tabs.findIndex((t) => t.sessionId === sessionId)
+      if (idx < 0) return current
+      const nextTabs = current.tabs.filter((_, i) => i !== idx)
+      if (nextTabs.length === 0) return { tabs: [], activeIndex: -1 }
+      let nextActiveIndex = current.activeIndex
+      if (current.activeIndex === idx) nextActiveIndex = Math.min(idx, nextTabs.length - 1)
+      else if (current.activeIndex > idx) nextActiveIndex = current.activeIndex - 1
+      return { tabs: nextTabs, activeIndex: nextActiveIndex }
+    })
+  }, [])
+
+  /**
+   * Reconcile persisted tabs against an authoritative session list:
+   * - Drop any tab whose sessionId no longer exists.
+   * - Normalize stale `status: 'running'` to match the server-side status
+   *   when the server reports the session as `idle` or `error` (cleans up
+   *   after daemon restarts / external state changes).
+   * - Optionally update labels to match server titles (fixes stale title
+   *   after rename when the tab wasn't focused).
+   */
+  const reconcileTabs = useCallback(
+    (
+      sessions: Array<{ id: string; title?: string; status?: string; employee?: string }>
+    ) => {
+      const byId = new Map(sessions.map((s) => [s.id, s]))
+      setState((current) => {
+        if (current.tabs.length === 0) return current
+        const nextTabs: ChatTab[] = []
+        for (const tab of current.tabs) {
+          const session = byId.get(tab.sessionId)
+          if (!session) continue // orphan — drop
+          let updated = tab
+          // Normalize stale 'running' if server says otherwise
+          if (
+            tab.status === 'running' &&
+            (session.status === 'idle' || session.status === 'error')
+          ) {
+            updated = {
+              ...updated,
+              status: session.status === 'error' ? 'error' : 'idle',
+            }
+          }
+          // Sync label if the server has a non-empty title that differs
+          if (session.title && session.title !== tab.label) {
+            updated = { ...updated, label: session.title }
+          }
+          if (session.employee && session.employee !== tab.employeeName) {
+            updated = { ...updated, employeeName: session.employee }
+          }
+          nextTabs.push(updated)
+        }
+        if (nextTabs.length === current.tabs.length) {
+          // No structural change — only commit if any field actually changed
+          const unchanged = nextTabs.every((t, i) => {
+            const o = current.tabs[i]
+            return t.label === o.label && t.status === o.status && t.employeeName === o.employeeName
+          })
+          if (unchanged) return current
+        }
+        let nextActive = current.activeIndex
+        if (nextActive >= 0) {
+          const activeSid = current.tabs[nextActive]?.sessionId
+          nextActive = activeSid ? nextTabs.findIndex((t) => t.sessionId === activeSid) : -1
+          if (nextActive < 0) nextActive = nextTabs.length > 0 ? 0 : -1
+        }
+        return { tabs: nextTabs, activeIndex: nextActive }
+      })
+    },
+    []
+  )
+
   return useMemo(() => ({
     tabs, activeTab, activeIndex,
     openTab, closeTab, switchTab, nextTab, prevTab,
     pinTab, moveTab,
     clearActiveTab, updateTabStatus,
+    closeTabBySessionId, reconcileTabs,
   }), [tabs, activeTab, activeIndex,
     openTab, closeTab, switchTab, nextTab, prevTab,
     pinTab, moveTab,
-    clearActiveTab, updateTabStatus])
+    clearActiveTab, updateTabStatus,
+    closeTabBySessionId, reconcileTabs])
 }
