@@ -19,7 +19,9 @@ interface ChatPaneProps {
   isActive: boolean
   onFocus: () => void
   /** Notify parent when a new session is created (e.g. first message in new chat) */
-  onSessionCreated?: (sessionId: string) => void
+  onSessionCreated?: (sessionId: string, pendingUserMessage?: Message) => void
+  /** If set on mount, used as the initial user message before loadSession resolves — for the just-created-from-new-chat case. */
+  pendingUserMessage?: Message
   /** Notify parent when session meta changes */
   onSessionMetaChange?: (meta: { title?: string; employee?: string; engine?: string; engineSessionId?: string; model?: string }) => void
   /** Notify parent to refresh sidebar */
@@ -57,8 +59,9 @@ export function ChatPane({
   viewMode = 'chat',
   focusTrigger,
   onShortcutsClick,
+  pendingUserMessage,
 }: ChatPaneProps) {
-  const [messages, setMessages] = useState<Message[]>([])
+  const [messages, setMessages] = useState<Message[]>(() => pendingUserMessage ? [pendingUserMessage] : [])
   const [loading, setLoading] = useState(false)
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
@@ -282,13 +285,23 @@ export function ChatPane({
           setMessages([...backendMessages, ...cached])
         } else {
           intermediateStartRef.current = backendMessages.length
-          setMessages(backendMessages)
+          setMessages((current) => {
+            // If backend has at least one message, trust it (it includes the user message — daemon inserts it before any delta).
+            if (backendMessages.length > 0) return backendMessages
+            // Backend returned empty (race or error) — keep the current state (which contains the pending user message).
+            return current
+          })
         }
         setLoading(true)
       } else {
         clearIntermediateMessages(id)
         intermediateStartRef.current = -1
-        setMessages(backendMessages)
+        setMessages((current) => {
+          // If backend has at least one message, trust it (it includes the user message — daemon inserts it before any delta).
+          if (backendMessages.length > 0) return backendMessages
+          // Backend returned empty (race or error) — keep the current state (which contains the pending user message).
+          return current
+        })
       }
     } catch {
       setMessages([])
@@ -386,7 +399,7 @@ export function ChatPane({
           })
           const session = (await api.createSession(params)) as Record<string, unknown>
           sid = String(session.id)
-          onSessionCreated?.(sid)
+          onSessionCreated?.(sid, userMsg)
           onRefresh?.()
         } else {
           await api.sendMessage(sid, { message, interrupt: interrupt || undefined, attachments: attachmentIds })

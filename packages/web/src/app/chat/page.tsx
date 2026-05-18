@@ -11,6 +11,7 @@ import { useChatTabs } from '@/hooks/use-chat-tabs'
 import { useKeyboardShortcuts, type ShortcutDef } from '@/hooks/use-keyboard-shortcuts'
 import { useDeleteSession, useDuplicateSession } from '@/hooks/use-sessions'
 import { clearIntermediateMessages } from '@/lib/conversations'
+import type { Message } from '@/lib/conversations'
 import { useSettings } from '@/app/settings-provider'
 import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
@@ -95,6 +96,8 @@ function ChatPage() {
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
   // Per-session KEEP ALIVE toggle (reflects the session's keep_alive flag)
   const [keepAlive, setKeepAlive] = useState(false)
+  // Pending user message from new-chat send — passed to the new ChatPane so the user bubble appears before loadSession resolves
+  const [pendingUserMessage, setPendingUserMessage] = useState<{ sessionId: string; message: Message } | null>(null)
 
   // Sync KEEP ALIVE state when the active session changes
   useEffect(() => {
@@ -265,11 +268,19 @@ function ChatPage() {
   }, [chatTabs, qc])
 
   // ChatPane callbacks
-  const handleSessionCreated = useCallback((newId: string) => {
+  const handleSessionCreated = useCallback((newId: string, pending?: Message) => {
+    if (pending) setPendingUserMessage({ sessionId: newId, message: pending })
     setSelectedId(newId)
     chatTabs.openTab({ sessionId: newId, label: 'New Chat', status: 'running', unread: false, pinned: true })
     qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
   }, [chatTabs, qc])
+
+  // Clear pendingUserMessage when selectedId moves away from the session it was created for
+  useEffect(() => {
+    if (pendingUserMessage && pendingUserMessage.sessionId !== selectedId) {
+      setPendingUserMessage(null)
+    }
+  }, [selectedId, pendingUserMessage])
 
   const handleSessionMetaChange = useCallback((meta: { title?: string; employee?: string; engine?: string; engineSessionId?: string; model?: string }) => {
     setSessionMeta(meta)
@@ -552,6 +563,11 @@ function ChatPage() {
               viewMode={viewMode}
               focusTrigger={focusTrigger}
               onShortcutsClick={() => setShowShortcutOverlay(true)}
+              pendingUserMessage={
+                pendingUserMessage && pendingUserMessage.sessionId === selectedId
+                  ? pendingUserMessage.message
+                  : undefined
+              }
             />
           </div>
         </div>
