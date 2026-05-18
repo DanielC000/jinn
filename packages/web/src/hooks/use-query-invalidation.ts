@@ -48,7 +48,7 @@ export function useQueryInvalidation() {
           return // No invalidation for unknown events
       }
 
-      // Debounce: flush pending invalidations after 500ms of quiet
+      // Debounce: flush pending invalidations after 1000ms of quiet
       if (timerRef.current) clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => {
         for (const key of pendingRef.current) {
@@ -65,7 +65,7 @@ export function useQueryInvalidation() {
           }
         }
         pendingRef.current.clear()
-      }, 500)
+      }, 1000)
     })
 
     return () => {

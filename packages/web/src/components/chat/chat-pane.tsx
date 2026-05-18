@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { api } from '@/lib/api'
+import { useOrg } from '@/hooks/use-employees'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
@@ -93,23 +94,15 @@ export function ChatPane({
 
   // Employee picker state for new chat
   const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null)
-  const [pickerEmployees, setPickerEmployees] = useState<Pick<Employee, 'name' | 'displayName' | 'department' | 'rank'>[]>([])
-  const employeesFetchedRef = useRef(false)
-
-  useEffect(() => {
-    if (sessionId) return // Only fetch when no active session
-    if (employeesFetchedRef.current && pickerEmployees.length > 0) return // Use cached result
-    api.getOrg().then((data) => {
-      if (!Array.isArray(data.employees)) return
-      setPickerEmployees(data.employees.map((emp) => ({
+  const { data: orgData } = useOrg()
+  const pickerEmployees = Array.isArray(orgData?.employees)
+    ? orgData.employees.map((emp) => ({
         name: emp.name,
         displayName: emp.displayName,
         department: emp.department,
         rank: emp.rank,
-      })))
-      employeesFetchedRef.current = true
-    }).catch(() => {})
-  }, [sessionId, pickerEmployees.length])
+      }))
+    : []
   useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
   // Helper: persist intermediate messages to localStorage
@@ -382,38 +375,17 @@ export function ChatPane({
   }, [sessionId]) // loadSession is stable (useCallback with [] deps)
 
   // Reload on reconnect — only fires when WS genuinely reconnects (connectionSeq changes)
+  // Only reloads running sessions; completed sessions don't need a refetch on every WS hiccup.
   // Debounced 300ms so a burst of connectionSeq bumps collapses into a single loadSession.
   useEffect(() => {
     if (!connectionSeq || !sessionIdRef.current) return
+    if (currentSession?.status !== 'running') return
     const handle = setTimeout(() => {
       loadSession(sessionIdRef.current!)
     }, 300)
     return () => clearTimeout(handle)
-  }, [connectionSeq]) // loadSession is stable; sessionIdRef.current is read at call time
+  }, [connectionSeq, currentSession?.status]) // loadSession is stable; sessionIdRef.current is read at call time
 
-  // Poll for completion while loading
-  useEffect(() => {
-    if (!sessionId || !loading) return
-    let inFlight = false
-    let cancelled = false
-    const timer = setInterval(async () => {
-      if (inFlight || cancelled) return
-      inFlight = true
-      try {
-        const session = (await api.getSession(sessionId)) as Record<string, unknown>
-        if (cancelled) return
-        if (session.status !== 'running') {
-          await loadSession(sessionId)
-          if (!cancelled) setLoading(false)
-        }
-      } catch {
-        // ignore transient polling errors
-      } finally {
-        inFlight = false
-      }
-    }, 5000)
-    return () => { cancelled = true; clearInterval(timer) }
-  }, [sessionId, loading]) // loadSession is stable (useCallback with [] deps)
 
   const handleInterrupt = useCallback(async () => {
     if (!sessionId) return

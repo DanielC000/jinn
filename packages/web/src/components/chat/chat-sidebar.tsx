@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
 import { ChevronDown, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
 import { api, type Employee } from "@/lib/api"
+import { useOrg } from "@/hooks/use-employees"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 import { useSettings } from "@/app/settings-provider"
 import { cleanPreview } from "@/lib/clean-preview"
@@ -291,7 +292,14 @@ export function ChatSidebar({
     sessions?: Session[]
   } | null>(null)
   const deleteButtonRef = useRef<HTMLButtonElement>(null)
-  const [employeeData, setEmployeeData] = useState<Map<string, Employee>>(new Map())
+  const { data: orgData } = useOrg()
+  const employeeData = useMemo(() => {
+    const map = new Map<string, Employee>()
+    for (const emp of orgData?.employees ?? []) {
+      map.set(emp.name, emp)
+    }
+    return map
+  }, [orgData])
   const onSessionsLoadedRef = useRef(onSessionsLoaded)
 
   useEffect(() => {
@@ -324,16 +332,6 @@ export function ChatSidebar({
     }
   }, [selectedId])
 
-  // Fetch employee display names from org API
-  useEffect(() => {
-    api.getOrg().then((org) => {
-      const map = new Map<string, Employee>()
-      for (const emp of org.employees) {
-        map.set(emp.name, emp)
-      }
-      setEmployeeData(map)
-    }).catch(() => { /* best-effort */ })
-  }, [])
 
   const toggleCronCollapsed = useCallback(() => {
     setCollapsed((prev) => {
