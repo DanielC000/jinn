@@ -54,6 +54,10 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
+import { LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
+
+/** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
+const HOOK_BODY_MAX_BYTES = 64 * 1024;
 
 export interface ApiContext {
   config: JinnConfig;
@@ -183,10 +187,34 @@ function dispatchWebSessionRun(
   }
 }
 
-function readBody(req: HttpRequest): Promise<string> {
+/** Signals that a request body exceeded the per-handler size cap. */
+class BodyTooLargeError extends Error {
+  constructor() {
+    super("Request body exceeds maximum allowed size");
+    this.name = "BodyTooLargeError";
+  }
+}
+
+interface ReadBodyOpts {
+  /** Hard cap on bytes accepted from the stream; rejects with BodyTooLargeError when exceeded. */
+  maxBytes?: number;
+}
+
+function readBody(req: HttpRequest, opts: ReadBodyOpts = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let total = 0;
+    const max = opts.maxBytes;
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (max !== undefined && total > max) {
+        // Bail out — destroy the socket so the sender stops shoveling bytes.
+        req.destroy();
+        reject(new BodyTooLargeError());
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks).toString()));
     req.on("error", reject);
   });
@@ -201,8 +229,21 @@ function readBodyRaw(req: HttpRequest): Promise<Buffer> {
   });
 }
 
-async function readJsonBody(req: HttpRequest, res: ServerResponse): Promise<{ ok: true; body: unknown } | { ok: false }> {
-  const raw = await readBody(req);
+async function readJsonBody(
+  req: HttpRequest,
+  res: ServerResponse,
+  opts: ReadBodyOpts = {},
+): Promise<{ ok: true; body: unknown } | { ok: false }> {
+  let raw: string;
+  try {
+    raw = await readBody(req, opts);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) {
+      json(res, { error: "Payload too large" }, 413);
+      return { ok: false };
+    }
+    throw err;
+  }
   try {
     return { ok: true, body: JSON.parse(raw) };
   } catch {
@@ -1562,12 +1603,24 @@ export async function handleApiRequest(
       if (!context.hookRegistry || !context.hookSecret) {
         return json(res, { error: "Interactive mode not active" }, 503);
       }
-      const _parsed = await readJsonBody(req, res);
+      // Loopback check FIRST — before reading the body — so a non-loopback
+      // caller can't force unbounded body buffering by sending a huge POST.
+      const remote = req.socket.remoteAddress;
+      if (!remote || !HOOK_LOOPBACK.has(remote)) {
+        return json(res, { message: "forbidden" }, 403);
+      }
+      // Reject oversized bodies up front via Content-Length, then enforce
+      // the cap mid-stream too in case the header was missing or lies.
+      const contentLength = Number(req.headers["content-length"] ?? NaN);
+      if (Number.isFinite(contentLength) && contentLength > HOOK_BODY_MAX_BYTES) {
+        return json(res, { error: "Payload too large" }, 413);
+      }
+      const _parsed = await readJsonBody(req, res, { maxBytes: HOOK_BODY_MAX_BYTES });
       if (!_parsed.ok) return;
       const { handleHookPost } = await import("./hook-endpoint.js");
       const hookBody = _parsed.body as { jinnSessionId?: string; hook?: import("./hook-registry.js").HookPayload };
       const result = handleHookPost(
-        { reg: context.hookRegistry, secret: context.hookSecret, remoteAddress: req.socket.remoteAddress },
+        { reg: context.hookRegistry, secret: context.hookSecret, remoteAddress: remote },
         req.headers["x-jinn-hook-secret"] as string | undefined,
         hookBody,
       );
