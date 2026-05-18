@@ -93,31 +93,6 @@ function buildAvailableServers(config: McpGlobalConfig): Record<string, McpServe
     };
   }
 
-  // Gateway MCP server (built-in, always uses the local gateway)
-  if (config.gateway?.enabled !== false) {
-    const gatewayMcpPath = path.resolve(
-      path.dirname(new URL(import.meta.url).pathname),
-      "..",
-      "..",
-      "dist",
-      "src",
-      "mcp",
-      "gateway-server.js",
-    );
-    // Only add if the built file exists; otherwise fall back to ts-node path
-    const scriptPath = fs.existsSync(gatewayMcpPath)
-      ? gatewayMcpPath
-      : path.resolve(path.dirname(new URL(import.meta.url).pathname), "gateway-server.js");
-
-    servers.gateway = {
-      command: "node",
-      args: [scriptPath],
-      env: {
-        JINN_GATEWAY_URL: `http://127.0.0.1:${process.env.JINN_PORT || "7777"}`,
-      },
-    };
-  }
-
   // Custom user-defined MCP servers
   if (config.custom) {
     for (const [name, serverConfig] of Object.entries(config.custom)) {
