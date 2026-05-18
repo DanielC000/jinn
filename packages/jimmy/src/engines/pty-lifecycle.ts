@@ -10,6 +10,8 @@ export interface PtyLifecycleOpts {
   graceWindowMs: number;
   idleTimeoutMs: number;
   maxLivePtys: number;
+  /** Called after a new PTY session is adopted — used to refresh gateway.json pids. */
+  onAdopt?: (sessionId: string) => void;
   /** Called after a PTY is killed/removed — used to clean the --settings file, hook registry, gateway.json pids. */
   onCleanup?: (sessionId: string) => void;
 }
@@ -37,6 +39,7 @@ export class PtyLifecycleManager {
       handle, cronOrigin: meta.cronOrigin, keepAlive: false,
       turnRunning: false, lastViewedAt: 0, lastActivityAt: Date.now(),
     });
+    this.opts.onAdopt?.(sessionId);
   }
 
   getWarm(sessionId: string): PtyHandle | undefined {

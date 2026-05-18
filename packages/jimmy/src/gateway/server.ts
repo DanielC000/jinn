@@ -17,7 +17,7 @@ import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import { CodexEngine } from "../engines/codex.js";
 import { GeminiEngine } from "../engines/gemini.js";
 import { HookRegistry } from "./hook-registry.js";
-import { writeGatewayInfo } from "./gateway-info.js";
+import { writeGatewayInfo, readGatewayInfo, updateGatewayPtyPids } from "./gateway-info.js";
 import { seedTrust, cleanupSessionSettings } from "../shared/claude-settings.js";
 import { GATEWAY_INFO_FILE, HOOK_RELAY_SCRIPT, JINN_HOME, CLAUDE_SETTINGS_DIR } from "../shared/paths.js";
 import { handleApiRequest, resumePendingWebQueueItems, type ApiContext } from "./api.js";
@@ -144,6 +144,29 @@ export async function startGateway(
   // Normalize claude engine config (idempotent — loadConfig already normalized it)
   const claudeCfg = normalizeClaudeEngineConfig(config.engines.claude);
 
+  // Reap any orphaned PTYs from a prior crashed run before writing the fresh gateway.json.
+  const oldInfo = readGatewayInfo(GATEWAY_INFO_FILE);
+  if (oldInfo) {
+    const pidsToReap = [
+      ...(oldInfo.ptyPids ?? []),
+      // Also try to reap the prior gateway process itself (in case it is still lingering).
+      oldInfo.pid,
+    ];
+    for (const pid of pidsToReap) {
+      if (pid === process.pid) continue; // paranoia: never signal ourselves
+      try {
+        process.kill(pid, "SIGTERM");
+        logger.info(`Reaping stale pid ${pid} from prior gateway`);
+      } catch (err: unknown) {
+        // ESRCH = no such process — already gone, which is the normal case.
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ESRCH") {
+          logger.warn(`Unexpected error reaping stale pid ${pid}: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+    }
+  }
+
   // Write gateway connection info (port + hook secret + pid) for hook-relay discovery.
   const gatewayInfo = writeGatewayInfo(GATEWAY_INFO_FILE, { port, pid: process.pid });
 
@@ -181,13 +204,18 @@ export async function startGateway(
       logger.warn(`Failed to seed Claude trust: ${err instanceof Error ? err.message : err}`);
     }
 
+    const refreshPtyPids = () => {
+      try { updateGatewayPtyPids(GATEWAY_INFO_FILE, claudeLifecycle!.livePids()); } catch { /* best effort */ }
+    };
     claudeLifecycle = new PtyLifecycleManager({
       graceWindowMs: claudeCfg.graceWindowMs!,
       idleTimeoutMs: claudeCfg.idleTimeoutMs!,
       maxLivePtys: claudeCfg.maxLivePtys!,
+      onAdopt: (_id) => refreshPtyPids(),
       onCleanup: (id) => {
         cleanupSessionSettings(CLAUDE_SETTINGS_DIR, id);
         hookRegistry.unregister(id);
+        refreshPtyPids();
       },
     });
     claudeEngine = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry, {
