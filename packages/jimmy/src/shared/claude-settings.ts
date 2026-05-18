@@ -44,8 +44,10 @@ export function writeSessionSettings(dir: string, sessionId: string, opts: Sessi
   fs.mkdirSync(dir, { recursive: true });
   const filePath = sessionSettingsPath(dir, sessionId);
   const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(buildSessionSettings(opts), null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(buildSessionSettings(opts), null, 2), { mode: 0o600 });
   fs.renameSync(tmp, filePath);
+  // Defensive: ensure the final file has 0o600 even if the target pre-existed.
+  fs.chmodSync(filePath, 0o600);
   return filePath;
 }
 
