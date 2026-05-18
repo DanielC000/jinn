@@ -33,9 +33,17 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
   if (scrollback.length > 0 && ws.readyState === ws.OPEN) ws.send(scrollback);
 
   // live output — engine yields Buffers already; forward as binary frames without re-encoding.
-  const unsubscribe = engine.subscribeOutput(sessionId, (data) => {
-    if (ws.readyState === ws.OPEN) ws.send(data);
-  });
+  // Control events (e.g. PTY respawn → `reset`) ride a JSON text frame so the client can
+  // distinguish them from raw PTY bytes (which stay binary).
+  const unsubscribe = engine.subscribeOutput(
+    sessionId,
+    (data) => {
+      if (ws.readyState === ws.OPEN) ws.send(data);
+    },
+    (event) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event));
+    },
+  );
 
   ws.on("message", (raw) => {
     let msg: any;

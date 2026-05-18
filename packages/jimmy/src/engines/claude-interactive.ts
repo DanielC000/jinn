@@ -282,6 +282,10 @@ export class TurnResolver {
 /** Cap for the per-session PTY scrollback ring buffer (xterm.js reconnect replay). */
 const SCROLLBACK_CAP_BYTES = 262144;
 
+/** Out-of-band control event for PTY subscribers. Currently only `reset` (emitted
+ *  when the PTY respawns mid-session so the client xterm can clear and re-attach). */
+export type PtyControlEvent = { type: "reset" };
+
 export class InteractiveClaudeEngine implements InterruptibleEngine {
   name = "claude" as const;
   /** Active turn resolvers keyed by Jinn session id. */
@@ -289,7 +293,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
   /** Per-session PTY output streams: scrollback ring buffer (chunk list + running byte total)
    *  + live subscribers. Survives PTY respawn. The chunk-list ring avoids the O(N) realloc
    *  that a `(buffer + d).slice(-CAP)` per data event would cause at hot output. */
-  private streams = new Map<string, { chunks: Buffer[]; totalBytes: number; subscribers: Set<(d: Buffer) => void> }>();
+  private streams = new Map<string, {
+    chunks: Buffer[];
+    totalBytes: number;
+    subscribers: Set<{ data: (d: Buffer) => void; control?: (e: PtyControlEvent) => void }>;
+  }>();
 
   constructor(
     private lifecycle: PtyLifecycleManager,
@@ -394,6 +402,16 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       kill: (signal?: string) => { try { proc.kill(signal); } catch { /* already gone */ } },
     } as PtyHandle;
     const stream = this.streamFor(jinnSessionId);
+    // If a previous PTY for this session left subscribers attached (WS outlived
+    // the old proc), tell them to reset their xterm before we start streaming
+    // the new PTY's output — otherwise the new alt-screen draws on top of the
+    // old one's leftover cells.
+    const isRespawn = this.streams.get(jinnSessionId) === stream && stream.subscribers.size > 0;
+    if (isRespawn) {
+      for (const sub of stream.subscribers) {
+        try { sub.control?.({ type: "reset" }); } catch { /* ignore */ }
+      }
+    }
     proc.onData((d) => {
       // Convert string to Buffer once; push to ring; evict head until under cap.
       const chunk = Buffer.from(d, "utf-8");
@@ -410,8 +428,8 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
         stream.chunks[0] = sliced;
         stream.totalBytes = sliced.length;
       }
-      for (const cb of stream.subscribers) {
-        try { cb(chunk); } catch { /* ignore subscriber errors */ }
+      for (const sub of stream.subscribers) {
+        try { sub.data(chunk); } catch { /* ignore subscriber errors */ }
       }
     });
     proc.onExit(() => {
@@ -518,7 +536,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
   }
 
   /** Lazily create (or fetch) the output stream entry for a Jinn session id. */
-  private streamFor(sessionId: string): { chunks: Buffer[]; totalBytes: number; subscribers: Set<(d: Buffer) => void> } {
+  private streamFor(sessionId: string): {
+    chunks: Buffer[];
+    totalBytes: number;
+    subscribers: Set<{ data: (d: Buffer) => void; control?: (e: PtyControlEvent) => void }>;
+  } {
     let stream = this.streams.get(sessionId);
     if (!stream) {
       stream = { chunks: [], totalBytes: 0, subscribers: new Set() };
@@ -535,12 +557,19 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     return Buffer.concat(s.chunks, s.totalBytes);
   }
 
-  /** Subscribe to live PTY output for a session. Returns an unsubscribe fn. Survives PTY respawn within the session. */
-  subscribeOutput(sessionId: string, cb: (data: Buffer) => void): () => void {
+  /** Subscribe to live PTY output for a session. Returns an unsubscribe fn. Survives PTY respawn within the session.
+   *  Optional `onControl` receives out-of-band events (currently just `{type:"reset"}`
+   *  when the PTY is replaced mid-session — the WS should forward this to the client xterm). */
+  subscribeOutput(
+    sessionId: string,
+    cb: (data: Buffer) => void,
+    onControl?: (event: PtyControlEvent) => void,
+  ): () => void {
     const stream = this.streamFor(sessionId);
-    stream.subscribers.add(cb);
+    const sub = { data: cb, control: onControl };
+    stream.subscribers.add(sub);
     return () => {
-      stream.subscribers.delete(cb);
+      stream.subscribers.delete(sub);
       // If this was the last subscriber AND there's no warm PTY producing data,
       // the streams entry is dead weight — drop it. Mirrors the onExit cleanup
       // path for sessions whose WS outlived the PTY.
