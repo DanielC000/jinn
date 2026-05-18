@@ -25,6 +25,7 @@ import {
   cancelAllPendingQueueItems,
   listAllPendingQueueItems,
   getFile,
+  initDb,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
@@ -395,15 +396,12 @@ export async function handleApiRequest(
       if (!session) return notFound(res);
       let messages = getMessages(params.id);
 
-      // Backfill from Claude Code's JSONL transcript if our DB has no messages
+      // Backfill from Claude Code's JSONL transcript if our DB has no messages.
+      // Run async + transactional so the GET doesn't block on multi-MB JSONL
+      // parsing + N individual INSERTs. Subsequent GETs will see the messages
+      // once the backfill finishes; this one returns whatever is in DB now.
       if (messages.length === 0 && session.engineSessionId) {
-        const transcriptMessages = loadTranscriptMessages(session.engineSessionId);
-        if (transcriptMessages.length > 0) {
-          for (const tm of transcriptMessages) {
-            insertMessage(params.id, tm.role, tm.content);
-          }
-          messages = getMessages(params.id);
-        }
+        scheduleTranscriptBackfill(params.id, session.engineSessionId);
       }
 
       // Support ?last=N to return only the N most recent messages
@@ -1674,6 +1672,46 @@ function loadRawTranscript(engineSessionId: string): TranscriptEntry[] {
     return entries;
   }
   return [];
+}
+
+/**
+ * Track which sessions currently have an in-flight transcript backfill so
+ * concurrent GETs don't kick off duplicate (expensive) parses. Once a backfill
+ * finishes and inserts rows, subsequent GETs see messages.length > 0 and skip
+ * scheduling entirely.
+ */
+const backfillInProgress = new Set<string>();
+
+function scheduleTranscriptBackfill(sessionId: string, engineSessionId: string): void {
+  if (backfillInProgress.has(sessionId)) return;
+  backfillInProgress.add(sessionId);
+  // Defer off the request-handling tick so the GET returns immediately.
+  setImmediate(() => {
+    try {
+      // Re-check inside the deferred task: another concurrent GET may have
+      // backfilled this session already (extremely unlikely given the Set
+      // guard, but cheap insurance).
+      const existing = getMessages(sessionId);
+      if (existing.length > 0) return;
+      const transcriptMessages = loadTranscriptMessages(engineSessionId);
+      if (transcriptMessages.length === 0) return;
+      // One transaction for the whole backfill — better-sqlite3 executes the
+      // inner inserts synchronously inside a single BEGIN/COMMIT, which is
+      // dramatically faster than autocommitting per row.
+      const db = initDb();
+      const txn = db.transaction((items: Array<{ role: string; content: string }>) => {
+        for (const tm of items) {
+          insertMessage(sessionId, tm.role, tm.content);
+        }
+      });
+      txn(transcriptMessages);
+      logger.info(`Backfilled ${transcriptMessages.length} transcript message(s) for session ${sessionId}`);
+    } catch (err) {
+      logger.warn(`Transcript backfill failed for session ${sessionId}: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      backfillInProgress.delete(sessionId);
+    }
+  });
 }
 
 function loadTranscriptMessages(engineSessionId: string): Array<{ role: string; content: string }> {
