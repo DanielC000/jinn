@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
+function withQueryClient(ui: React.ReactNode) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
+}
 
 // --- ChatSidebar shortcut hints ---
 
@@ -42,7 +48,7 @@ describe('ChatSidebar shortcut hints', () => {
   }
 
   it('renders "New" button with shortcut hint in title/aria-label', () => {
-    render(<ChatSidebar {...defaultProps} />)
+    render(withQueryClient(<ChatSidebar {...defaultProps} />))
     // The New button should have a title attribute containing "N" shortcut
     const newBtn = screen.getByRole('button', { name: /new/i })
     const title = newBtn.getAttribute('title') ?? newBtn.getAttribute('aria-label') ?? ''
@@ -50,7 +56,7 @@ describe('ChatSidebar shortcut hints', () => {
   })
 
   it('renders search input with placeholder', () => {
-    render(<ChatSidebar {...defaultProps} />)
+    render(withQueryClient(<ChatSidebar {...defaultProps} />))
     const searchInput = screen.getByPlaceholderText(/search/i)
     expect(searchInput).toBeTruthy()
   })

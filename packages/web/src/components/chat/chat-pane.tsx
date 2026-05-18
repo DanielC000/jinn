@@ -1,13 +1,15 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from 'react'
+import dynamic from 'next/dynamic'
 import { api } from '@/lib/api'
 import { useOrg } from '@/hooks/use-employees'
 import { ChatMessages } from '@/components/chat/chat-messages'
 import { ChatInput } from '@/components/chat/chat-input'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
-import { CliTerminal } from '@/components/cli-terminal'
+
+const CliTerminal = dynamic(() => import('@/components/cli-terminal').then(m => m.CliTerminal), { ssr: false })
 import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
 import type { Employee } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
