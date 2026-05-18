@@ -270,11 +270,15 @@ export async function startGateway(
           logger.error(`Slack route error: ${err instanceof Error ? err.message : err}`);
         });
       });
-      await slack.start();
+      // Push to registry before starting so shutdown can clean up even if start is in-flight.
       connectors.push(slack);
       connectorMap.set("slack", slack);
+      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
+      slack.start().catch((err) => {
+        logger.error(`Failed to start Slack connector: ${err instanceof Error ? err.message : err}`);
+      });
     } catch (err) {
-      logger.error(`Failed to start Slack connector: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Failed to initialize Slack connector: ${err instanceof Error ? err.message : err}`);
     }
   }
 
@@ -295,12 +299,16 @@ export async function startGateway(
           logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
         });
       });
-      await discord.start();
+      // Push to registry before starting so shutdown can clean up even if start is in-flight.
       connectors.push(discord);
       connectorMap.set("discord", discord);
-      logger.info("Discord remote connector started");
+      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
+      discord.start().catch((err) => {
+        logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
+      });
+      logger.info("Discord remote connector starting");
     } catch (err) {
-      logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Failed to initialize remote Discord connector: ${err instanceof Error ? err.message : err}`);
     }
   } else if (config.connectors?.discord?.botToken) {
     // Primary mode: direct Discord bot connection
@@ -316,12 +324,16 @@ export async function startGateway(
           logger.error(`Discord route error: ${err instanceof Error ? err.message : err}`);
         });
       });
-      await discord.start();
+      // Push to registry before starting so shutdown can clean up even if start is in-flight.
       connectors.push(discord);
       connectorMap.set("discord", discord);
-      logger.info("Discord connector started");
+      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
+      discord.start().catch((err) => {
+        logger.error(`Failed to start Discord connector: ${err instanceof Error ? err.message : err}`);
+      });
+      logger.info("Discord connector starting");
     } catch (err) {
-      logger.error(`Failed to start Discord connector: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Failed to initialize Discord connector: ${err instanceof Error ? err.message : err}`);
     }
   } else if (config.connectors?.discord?.proxyVia) {
     try {
@@ -336,12 +348,16 @@ export async function startGateway(
           logger.error(`Discord (remote) route error: ${err instanceof Error ? err.message : err}`);
         });
       });
-      await discord.start();
+      // Push to registry before starting so shutdown can clean up even if start is in-flight.
       connectors.push(discord);
       connectorMap.set("discord", discord);
-      logger.info(`Discord connector started in remote mode (via ${config.connectors.discord.proxyVia})`);
+      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
+      discord.start().catch((err) => {
+        logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
+      });
+      logger.info(`Discord connector starting in remote mode (via ${config.connectors.discord.proxyVia})`);
     } catch (err) {
-      logger.error(`Failed to start remote Discord connector: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Failed to initialize remote Discord connector: ${err instanceof Error ? err.message : err}`);
     }
   }
 
@@ -362,11 +378,15 @@ export async function startGateway(
           logger.error(`Telegram route error: ${err instanceof Error ? err.message : err}`);
         });
       });
-      await telegram.start();
+      // Push to registry before starting so shutdown can clean up even if start is in-flight.
       connectors.push(telegram);
       connectorMap.set("telegram", telegram);
+      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
+      telegram.start().catch((err) => {
+        logger.error(`Failed to start Telegram connector: ${err instanceof Error ? err.message : err}`);
+      });
     } catch (err) {
-      logger.error(`Failed to start Telegram connector: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Failed to initialize Telegram connector: ${err instanceof Error ? err.message : err}`);
     }
   }
 
@@ -383,12 +403,16 @@ export async function startGateway(
           logger.error(`WhatsApp route error: ${err instanceof Error ? err.message : err}`);
         });
       });
-      await whatsapp.start();
+      // Push to registry before starting so shutdown can clean up even if start is in-flight.
       connectors.push(whatsapp);
       connectorMap.set("whatsapp", whatsapp);
-      logger.info("WhatsApp connector started (scan QR code if first run)");
+      // Fire-and-forget: don't block boot — a slow handshake must not delay HTTP listen.
+      whatsapp.start().catch((err) => {
+        logger.error(`Failed to start WhatsApp connector: ${err instanceof Error ? err.message : err}`);
+      });
+      logger.info("WhatsApp connector starting (scan QR code if first run)");
     } catch (err) {
-      logger.error(`Failed to start WhatsApp connector: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Failed to initialize WhatsApp connector: ${err instanceof Error ? err.message : err}`);
     }
   }
 
