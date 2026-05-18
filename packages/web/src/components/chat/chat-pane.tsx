@@ -36,12 +36,6 @@ interface ChatPaneProps {
   events: Array<{ event: string; payload: unknown }>
   /** View mode: chat or cli transcript */
   viewMode?: 'chat' | 'cli'
-  /** Optional: onboarding prompt generator for stub sessions */
-  getOnboardingPrompt?: (message: string) => string
-  /** Whether the current session is a stub (onboarding) */
-  isStubSession?: boolean
-  /** Callback to clear stub status */
-  onStubCleared?: () => void
   /** Incrementing counter that triggers input focus */
   focusTrigger?: number
   /** Callback to open keyboard shortcuts overlay */
@@ -61,9 +55,6 @@ export function ChatPane({
   skillsVersion,
   events,
   viewMode = 'chat',
-  getOnboardingPrompt,
-  isStubSession,
-  onStubCleared,
   focusTrigger,
   onShortcutsClick,
 }: ChatPaneProps) {
@@ -387,13 +378,7 @@ export function ChatPane({
 
         let sid = sessionId
 
-        // Handle stub session (onboarding)
-        if (sid && isStubSession && getOnboardingPrompt) {
-          onStubCleared?.()
-          const onboardingPrompt = getOnboardingPrompt(message)
-          await api.sendMessage(sid, { message: onboardingPrompt, attachments: attachmentIds })
-          onRefresh?.()
-        } else if (!sid) {
+        if (!sid) {
           const params = buildNewSessionParams({
             message,
             selectedEmployee,
@@ -420,7 +405,7 @@ export function ChatPane({
         ])
       }
     },
-    [sessionId, selectedEmployee, isStubSession, getOnboardingPrompt, onStubCleared, onSessionCreated, onRefresh]
+    [sessionId, selectedEmployee, onSessionCreated, onRefresh]
   )
 
   const handleStatusRequest = useCallback(async () => {

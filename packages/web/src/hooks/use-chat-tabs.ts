@@ -5,14 +5,11 @@ import { useState, useCallback, useEffect, useMemo } from 'react'
 export interface ChatTab {
   sessionId: string
   label: string        // Employee name or session title
-  emoji?: string       // Employee avatar emoji (legacy, unused)
   employeeName?: string // Employee name for avatar generation
   status: 'idle' | 'running' | 'error'
   unread: boolean
   /** If true, this is a "pinned" tab (VS Code style) — won't be replaced by preview. */
   pinned?: boolean
-  /** Timestamp (ms) when this tab last became the active tab. Used for keep-alive cache ordering. */
-  lastViewedAt: number
 }
 
 const STORAGE_KEY = 'jinn-chat-tabs'
@@ -36,16 +33,7 @@ function loadTabs(): TabState {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = clampState(JSON.parse(raw))
-      // Old persisted tabs won't have lastViewedAt — default to 0 so they sort last.
-      const tabs = parsed.tabs.map((t) => ({
-        ...t,
-        lastViewedAt: typeof t.lastViewedAt === 'number' ? t.lastViewedAt : 0,
-      }))
-      // Ensure the currently-active tab has a fresh-ish timestamp so it stays in the cache.
-      if (parsed.activeIndex >= 0 && parsed.activeIndex < tabs.length && tabs[parsed.activeIndex].lastViewedAt === 0) {
-        tabs[parsed.activeIndex] = { ...tabs[parsed.activeIndex], lastViewedAt: Date.now() }
-      }
-      return { tabs, activeIndex: parsed.activeIndex }
+      return { tabs: parsed.tabs, activeIndex: parsed.activeIndex }
     }
   } catch {}
   return { tabs: [], activeIndex: -1 }
@@ -75,16 +63,13 @@ export function useChatTabs() {
    * - Otherwise, append a new preview tab.
    * The `pinned` field on the incoming tab is respected — if true, it opens pinned.
    */
-  const openTab = useCallback((incoming: Omit<ChatTab, 'lastViewedAt'>) => {
-    const tab: ChatTab = { ...incoming, lastViewedAt: Date.now() }
+  const openTab = useCallback((incoming: ChatTab) => {
+    const tab: ChatTab = { ...incoming }
     setState((current) => {
-      // Already open? Just switch to it — keep existing label/status, refresh lastViewedAt
+      // Already open? Just switch to it — keep existing label/status
       const existing = current.tabs.findIndex((t) => t.sessionId === tab.sessionId)
       if (existing >= 0) {
-        const nextTabs = current.tabs.map((t, i) =>
-          i === existing ? { ...t, lastViewedAt: tab.lastViewedAt } : t
-        )
-        return { tabs: nextTabs, activeIndex: existing }
+        return { tabs: current.tabs, activeIndex: existing }
       }
 
       // If incoming tab is not explicitly pinned, replace the existing preview tab
@@ -140,10 +125,7 @@ export function useChatTabs() {
   const switchTab = useCallback((index: number) => {
     setState((current) => {
       if (index < 0 || index >= current.tabs.length) return current
-      const nextTabs = current.tabs.map((t, i) =>
-        i === index ? { ...t, lastViewedAt: Date.now() } : t
-      )
-      return { tabs: nextTabs, activeIndex: index }
+      return { tabs: current.tabs, activeIndex: index }
     })
   }, [tabs.length])
 
@@ -176,10 +158,7 @@ export function useChatTabs() {
     setState((current) => {
       if (current.tabs.length === 0) return current
       const nextActive = (current.activeIndex + 1 + current.tabs.length) % current.tabs.length
-      const nextTabs = current.tabs.map((t, i) =>
-        i === nextActive ? { ...t, lastViewedAt: Date.now() } : t
-      )
-      return { tabs: nextTabs, activeIndex: nextActive }
+      return { tabs: current.tabs, activeIndex: nextActive }
     })
   }, [tabs.length])
 
@@ -187,10 +166,7 @@ export function useChatTabs() {
     setState((current) => {
       if (current.tabs.length === 0) return current
       const nextActive = (current.activeIndex - 1 + current.tabs.length) % current.tabs.length
-      const nextTabs = current.tabs.map((t, i) =>
-        i === nextActive ? { ...t, lastViewedAt: Date.now() } : t
-      )
-      return { tabs: nextTabs, activeIndex: nextActive }
+      return { tabs: current.tabs, activeIndex: nextActive }
     })
   }, [tabs.length])
 

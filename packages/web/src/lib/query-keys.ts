@@ -21,5 +21,4 @@ export const queryKeys = {
   },
   config: ['config'] as const,
   status: ['status'] as const,
-  onboarding: ['onboarding'] as const,
 } as const

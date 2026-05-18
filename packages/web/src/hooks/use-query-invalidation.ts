@@ -33,7 +33,6 @@ export function useQueryInvalidation() {
         case 'session:error':
         case 'session:deleted':
           pendingRef.current.add('sessions')
-          pendingRef.current.add('costs')
           if (p?.sessionId) {
             qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(p.sessionId as string) })
           }
@@ -56,9 +55,6 @@ export function useQueryInvalidation() {
           switch (key) {
             case 'sessions':
               qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
-              break
-            case 'costs':
-              qc.invalidateQueries({ queryKey: ['costs'] })
               break
             case 'cron':
               qc.invalidateQueries({ queryKey: queryKeys.cron.all })

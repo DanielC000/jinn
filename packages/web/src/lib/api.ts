@@ -134,8 +134,6 @@ export const api = {
     post<{ status: string; count: number }>("/api/sessions/bulk-delete", { ids }),
   createSession: (data: Record<string, unknown>) =>
     post<Record<string, unknown>>("/api/sessions", data),
-  createStubSession: (data: Record<string, unknown>) =>
-    post<Record<string, unknown>>("/api/sessions/stub", data),
   sendMessage: (id: string, data: Record<string, unknown>) =>
     post<Record<string, unknown>>(`/api/sessions/${id}/message`, data),
   stopSession: (id: string) =>
