@@ -54,7 +54,7 @@ import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
-import { LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
+import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
 
 /** Max bytes accepted on /api/internal/hook (loopback-only relay payloads are tiny). */
 const HOOK_BODY_MAX_BYTES = 64 * 1024;
@@ -1617,7 +1617,6 @@ export async function handleApiRequest(
       }
       const _parsed = await readJsonBody(req, res, { maxBytes: HOOK_BODY_MAX_BYTES });
       if (!_parsed.ok) return;
-      const { handleHookPost } = await import("./hook-endpoint.js");
       const hookBody = _parsed.body as { jinnSessionId?: string; hook?: import("./hook-registry.js").HookPayload };
       const result = handleHookPost(
         { reg: context.hookRegistry, secret: context.hookSecret, remoteAddress: remote },
