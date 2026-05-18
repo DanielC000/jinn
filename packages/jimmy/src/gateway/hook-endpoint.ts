@@ -7,7 +7,7 @@ export interface HookEndpointCtx {
   remoteAddress: string | undefined;
 }
 
-const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+export const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 
 export function handleHookPost(
   ctx: HookEndpointCtx,
