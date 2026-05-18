@@ -28,6 +28,7 @@ import {
   getFile,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
+import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -525,8 +526,18 @@ export async function handleApiRequest(
         const { session: newSession, messageCount } = duplicateSession(params.id);
         newSessionId = newSession.id;
 
-        // 2. Fork the engine session (Claude/Codex/Gemini)
-        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME);
+        // 2. Fork the engine session (Claude/Codex/Gemini).
+        // For Claude, when the interactive engine is in use, route the fork
+        // through a PTY (no `-p`) so the new turn bills as `cc_entrypoint=cli`
+        // and the source session's warm PTY is released first.
+        let interactiveCtx;
+        if (source.engine === "claude") {
+          const claudeEngine = context.sessionManager.getEngine("claude");
+          if (claudeEngine instanceof InteractiveClaudeEngine) {
+            interactiveCtx = { sourceJinnSessionId: source.id, engine: claudeEngine };
+          }
+        }
+        const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME, interactiveCtx);
 
         // 3. Store the new engine session ID
         updateSession(newSession.id, { engineSessionId: forkResult.engineSessionId });
