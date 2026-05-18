@@ -113,7 +113,6 @@ export function ChatPane({
 
       if (event === 'session:delta') {
         const deltaType = String(p.type || 'text')
-        dbg(sid, `WS session:delta ${deltaType}`, { contentLen: typeof p.content === 'string' ? p.content.length : 0, toolName: p.toolName })
 
         if (deltaType === 'text') {
           const chunk = String(p.content || '')
@@ -200,7 +199,6 @@ export function ChatPane({
       }
 
       if (event === 'session:completed') {
-        dbg(sid, 'WS session:completed', { resultLen: typeof p.result === 'string' ? p.result.length : 0, hasError: !!p.error })
         streamingTextRef.current = ''
         setStreamingText('')
         setLoading(false)
@@ -249,14 +247,11 @@ export function ChatPane({
   // Load session data
   const loadSession = useCallback(async (id: string) => {
     const myToken = ++loadTokenRef.current
-    dbg(id, 'loadSession START', { token: myToken })
     try {
       const session = (await api.getSession(id)) as Record<string, unknown>
       if (myToken !== loadTokenRef.current) {
-        dbg(id, 'loadSession STALE — ignoring response', { myToken, latest: loadTokenRef.current })
         return
       }
-      dbg(id, 'loadSession got session', { status: session.status, messagesCount: Array.isArray(session.messages) ? session.messages.length : 'n/a' })
       setCurrentSession(session)
       const meta = {
         engine: session.engine ? String(session.engine) : undefined,
@@ -295,7 +290,6 @@ export function ChatPane({
         const cached = loadIntermediateMessages(id)
         if (cached.length > 0) {
           intermediateStartRef.current = backendMessages.length
-          dbg(id, 'loadSession isRunning+cached → setMessages', { backendCount: backendMessages.length, cachedCount: cached.length })
           setMessages([...backendMessages, ...cached])
         } else {
           intermediateStartRef.current = backendMessages.length
@@ -304,11 +298,9 @@ export function ChatPane({
             // local already contains streaming-completed messages not yet persisted (or
             // a stale-snapshot race during slow GET). Keep current.
             if (backendMessages.length < current.length) {
-              dbg(id, 'loadSession isRunning → KEEPING current (backend shorter)', { current: current.length, backend: backendMessages.length })
               return current
             }
             const next = backendMessages.length > 0 ? backendMessages : current
-            dbg(id, 'loadSession isRunning → setMessages', { from: current.length, to: next.length, kept: next === current })
             return next
           })
         }
@@ -323,11 +315,9 @@ export function ChatPane({
           // local already contains streaming-completed messages not yet persisted (or
           // a stale-snapshot race during slow GET). Keep current.
           if (backendMessages.length < current.length) {
-            dbg(id, 'loadSession notRunning → KEEPING current (backend shorter)', { current: current.length, backend: backendMessages.length, status: session.status })
             return current
           }
           const next = backendMessages.length > 0 ? backendMessages : current
-          dbg(id, 'loadSession notRunning → setMessages', { from: current.length, to: next.length, kept: next === current, status: session.status })
           return next
         })
       }
@@ -340,9 +330,7 @@ export function ChatPane({
 
   // Load on session change
   useEffect(() => {
-    dbg(sessionId, 'effect[sessionId] fired', { sessionId })
     if (!sessionId) {
-      dbg(sessionId, 'effect[sessionId] !sessionId → clearing all state')
       setMessages([])
       setLoading(false)
       setCurrentSession(null)
@@ -358,7 +346,6 @@ export function ChatPane({
     // NOTE: do NOT setLoading(false) here. Loading is owned by handleSend (true) and
     // WS session:completed/stopped (false). Clearing here would clobber the lazy-init
     // loading=true set by useState() when this pane mounted with pendingUserMessage.
-    dbg(sessionId, 'effect[sessionId] calling loadSession')
     loadSession(sessionId)
   }, [sessionId]) // loadSession is stable (useCallback with [] deps)
 
@@ -386,7 +373,6 @@ export function ChatPane({
 
   const handleSend = useCallback(
     async (message: string, media?: MediaAttachment[], interrupt?: boolean) => {
-      dbg(sessionId, 'handleSend START', { messagePreview: message.slice(0, 40), sessionIdAtSend: sessionId })
       const userMsg: Message = {
         id: crypto.randomUUID(),
         role: 'user',
@@ -396,9 +382,7 @@ export function ChatPane({
       }
       setMessages((prev) => {
         intermediateStartRef.current = prev.length + 1
-        const next = [...prev, userMsg]
-        dbg(sessionId, 'handleSend optimistic setMessages', { from: prev.length, to: next.length })
-        return next
+        return [...prev, userMsg]
       })
       setLoading(true)
 
@@ -423,11 +407,8 @@ export function ChatPane({
             selectedEmployee,
             attachmentIds,
           })
-          dbg(null, 'handleSend createSession START')
           const session = (await api.createSession(params)) as Record<string, unknown>
           sid = String(session.id)
-          dbg(sid, 'handleSend createSession DONE', { newSid: sid })
-          dbg(sid, 'handleSend → onSessionCreated(sid, userMsg)', { hasUserMsg: !!userMsg })
           onSessionCreated?.(sid, userMsg)
           onRefresh?.()
         } else {

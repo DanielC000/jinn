@@ -331,7 +331,6 @@ function ChatPage() {
 
   // ChatPane callbacks
   const handleSessionCreated = useCallback((newId: string, pending?: Message) => {
-    try { console.log(`[chat-debug] ${new Date().toISOString().slice(11,23)} ${newId.slice(0,8)} parent.handleSessionCreated`, { hasPending: !!pending }) } catch {}
     if (pending) setPendingUserMessage({ sessionId: newId, message: pending })
     setSelectedId(newId)
     chatTabs.openTab({ sessionId: newId, label: 'New Chat', status: 'running', unread: false, pinned: true })
@@ -341,7 +340,6 @@ function ChatPage() {
   // Clear pendingUserMessage when selectedId moves away from the session it was created for
   useEffect(() => {
     if (pendingUserMessage && pendingUserMessage.sessionId !== selectedId) {
-      try { console.log(`[chat-debug] ${new Date().toISOString().slice(11,23)} ${(selectedId??'NONE').slice(0,8)} parent.clearPending (was=${pendingUserMessage.sessionId.slice(0,8)})`) } catch {}
       setPendingUserMessage(null)
     }
   }, [selectedId, pendingUserMessage])
