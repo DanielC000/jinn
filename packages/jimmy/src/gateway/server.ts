@@ -13,6 +13,7 @@ import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSes
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
+import { RoutingClaudeEngine } from "../engines/claude-routing.js";
 import { PtyLifecycleManager } from "../engines/pty-lifecycle.js";
 import { CodexEngine } from "../engines/codex.js";
 import { GeminiEngine } from "../engines/gemini.js";
@@ -174,7 +175,9 @@ export async function startGateway(
   const hookRegistry = new HookRegistry();
 
   // Set up engines — Claude engine selection depends on configured mode.
-  let claudeEngine: ClaudeEngine | InteractiveClaudeEngine;
+  // In "interactive" mode we build BOTH the headless and interactive engines and wrap
+  // them in RoutingClaudeEngine, which picks per call based on EngineRunOpts.claudeVariant.
+  let claudeEngine: ClaudeEngine | InteractiveClaudeEngine | RoutingClaudeEngine;
   let claudeLifecycle: PtyLifecycleManager | null = null;
   if (claudeCfg.mode === "interactive") {
     // Copy the hook-relay asset next to JINN_HOME so spawned Claude PTYs can find it.
@@ -218,17 +221,19 @@ export async function startGateway(
         refreshPtyPids();
       },
     });
-    claudeEngine = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry, {
+    const interactiveClaude = new InteractiveClaudeEngine(claudeLifecycle, hookRegistry, {
       turnTimeoutMs: claudeCfg.turnTimeoutMs!,
     });
-    logger.info("Claude engine: INTERACTIVE mode (PTY, bills as cc_entrypoint=cli)");
+    const headlessClaude = new ClaudeEngine();
+    claudeEngine = new RoutingClaudeEngine(headlessClaude, interactiveClaude);
+    logger.info("Claude engine: INTERACTIVE mode (routing wrapper — web CLI = PTY, else headless `claude -p`)");
   } else {
     claudeEngine = new ClaudeEngine();
     logger.info("Claude engine: headless mode (claude -p)");
   }
   const codexEngine = new CodexEngine();
   const geminiEngine = new GeminiEngine();
-  const engines = new Map<string, ClaudeEngine | InteractiveClaudeEngine | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine>>();
+  const engines = new Map<string, ClaudeEngine | InteractiveClaudeEngine | RoutingClaudeEngine | InstanceType<typeof CodexEngine> | InstanceType<typeof GeminiEngine>>();
   engines.set("claude", claudeEngine);
   engines.set("codex", codexEngine);
   engines.set("gemini", geminiEngine);
@@ -741,9 +746,12 @@ export async function startGateway(
     const ptyMatch = reqUrl.split("?")[0].match(/^\/ws\/pty\/([^/]+)$/);
     if (ptyMatch) {
       const sessionId = decodeURIComponent(ptyMatch[1]);
-      if (claudeEngine instanceof InteractiveClaudeEngine) {
+      const interactive = claudeEngine instanceof RoutingClaudeEngine
+        ? claudeEngine.getInteractive()
+        : (claudeEngine instanceof InteractiveClaudeEngine ? claudeEngine : null);
+      if (interactive) {
         ptyWss.handleUpgrade(req, socket, head, (ws) => {
-          attachPtyWebSocket(ws, sessionId, claudeEngine as InteractiveClaudeEngine);
+          attachPtyWebSocket(ws, sessionId, interactive);
         });
       } else {
         socket.destroy();
@@ -787,9 +795,13 @@ export async function startGateway(
     onOrgChange: () => {
       employeeRegistry = scanOrg();
       logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
-      // Org/persona changed — drop warm PTYs so the next turn respawns with fresh --append-system-prompt
-      if (claudeEngine instanceof InteractiveClaudeEngine) {
-        claudeEngine.killAll();
+      // Org/persona changed — drop warm PTYs so the next turn respawns with fresh --append-system-prompt.
+      // Don't kill headless here — its processes are short-lived anyway.
+      const interactive = claudeEngine instanceof RoutingClaudeEngine
+        ? claudeEngine.getInteractive()
+        : (claudeEngine instanceof InteractiveClaudeEngine ? claudeEngine : null);
+      if (interactive) {
+        interactive.killAll();
       }
       emit("org:changed", {});
     },

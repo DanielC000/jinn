@@ -7,6 +7,7 @@ export function buildNewSessionParams(opts: {
   message: string
   selectedEmployee: string | null
   attachmentIds?: string[]
+  claudeVariant?: 'headless' | 'interactive'
 }): Record<string, unknown> {
   const params: Record<string, unknown> = {
     source: 'web',
@@ -19,6 +20,10 @@ export function buildNewSessionParams(opts: {
 
   if (opts.attachmentIds && opts.attachmentIds.length > 0) {
     params.attachments = opts.attachmentIds
+  }
+
+  if (opts.claudeVariant) {
+    params.claudeVariant = opts.claudeVariant
   }
 
   return params

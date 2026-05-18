@@ -387,24 +387,29 @@ export function ChatPane({
 
         let sid = sessionId
 
+        // Derive the Claude engine variant from the current view mode:
+        // CLI view → interactive (PTY), Chat view → headless (`claude -p`).
+        const claudeVariant: 'headless' | 'interactive' = viewMode === 'cli' ? 'interactive' : 'headless'
+
         // Handle stub session (onboarding)
         if (sid && isStubSession && getOnboardingPrompt) {
           onStubCleared?.()
           const onboardingPrompt = getOnboardingPrompt(message)
-          await api.sendMessage(sid, { message: onboardingPrompt, attachments: attachmentIds })
+          await api.sendMessage(sid, { message: onboardingPrompt, attachments: attachmentIds, claudeVariant })
           onRefresh?.()
         } else if (!sid) {
           const params = buildNewSessionParams({
             message,
             selectedEmployee,
             attachmentIds,
+            claudeVariant,
           })
           const session = (await api.createSession(params)) as Record<string, unknown>
           sid = String(session.id)
           onSessionCreated?.(sid)
           onRefresh?.()
         } else {
-          await api.sendMessage(sid, { message, interrupt: interrupt || undefined, attachments: attachmentIds })
+          await api.sendMessage(sid, { message, interrupt: interrupt || undefined, attachments: attachmentIds, claudeVariant })
           onRefresh?.()
         }
       } catch (err) {

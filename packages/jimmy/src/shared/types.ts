@@ -43,6 +43,9 @@ export interface EngineRunOpts {
   sessionId?: string;
   /** Session source ("cron", "web", "slack", …) — used by the interactive engine for lifecycle policy. */
   source?: string;
+  /** When using the Claude engine, force a specific variant. Web "cli" mode sends "interactive";
+   *  everything else lets the engine route by source default. */
+  claudeVariant?: "headless" | "interactive";
 }
 
 export interface EngineResult {

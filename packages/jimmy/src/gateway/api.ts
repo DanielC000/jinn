@@ -29,6 +29,7 @@ import {
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
+import { RoutingClaudeEngine } from "../engines/claude-routing.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -143,18 +144,23 @@ function maybeRevertEngineOverride(session: Session): Session {
   }) ?? session;
 }
 
+/** Coerce a request-body field to a valid claudeVariant or undefined. */
+function parseClaudeVariant(v: unknown): "headless" | "interactive" | undefined {
+  return v === "headless" || v === "interactive" ? v : undefined;
+}
+
 function dispatchWebSessionRun(
   session: Session,
   prompt: string,
   engine: Engine,
   config: JinnConfig,
   context: ApiContext,
-  opts?: { delayMs?: number; queueItemId?: string; attachments?: string[] },
+  opts?: { delayMs?: number; queueItemId?: string; attachments?: string[]; claudeVariant?: "headless" | "interactive" },
 ): void {
   const run = async () => {
     await context.sessionManager.getQueue().enqueue(session.sessionKey || session.sourceRef, async () => {
       context.emit("session:started", { sessionId: session.id });
-      await runWebSession(session, prompt, engine, config, context, opts?.attachments);
+      await runWebSession(session, prompt, engine, config, context, opts?.attachments, opts?.claudeVariant);
     }, opts?.queueItemId);
   };
 
@@ -533,8 +539,11 @@ export async function handleApiRequest(
         let interactiveCtx;
         if (source.engine === "claude") {
           const claudeEngine = context.sessionManager.getEngine("claude");
-          if (claudeEngine instanceof InteractiveClaudeEngine) {
-            interactiveCtx = { sourceJinnSessionId: source.id, engine: claudeEngine };
+          const interactive = claudeEngine instanceof RoutingClaudeEngine
+            ? claudeEngine.getInteractive()
+            : (claudeEngine instanceof InteractiveClaudeEngine ? claudeEngine : null);
+          if (interactive) {
+            interactiveCtx = { sourceJinnSessionId: source.id, engine: interactive };
           }
         }
         const forkResult = forkEngineSession(source.engine, source.engineSessionId, JINN_HOME, interactiveCtx);
@@ -744,12 +753,13 @@ export async function handleApiRequest(
       session.status = "running";
 
       const attachmentPaths = resolveAttachmentPaths(body.attachments);
+      const claudeVariant = parseClaudeVariant(body.claudeVariant);
 
       const queueSessionKey = session.sessionKey || session.sourceRef || session.id;
       const queueItemId = enqueueQueueItem(session.id, queueSessionKey, prompt);
       context.emit("queue:updated", { sessionId: session.id, sessionKey: queueSessionKey });
 
-      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
+      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined, claudeVariant });
 
       return json(res, serializeSession(session, context), 201);
     }
@@ -830,12 +840,13 @@ export async function handleApiRequest(
       context.sessionManager.getQueue().clearCancelled(session.sessionKey || session.sourceRef || session.id);
 
       const attachmentPaths = resolveAttachmentPaths(body.attachments);
+      const claudeVariant = parseClaudeVariant(body.claudeVariant);
 
       const sessionKey = session.sessionKey || session.sourceRef || session.id;
       const queueItemId = enqueueQueueItem(session.id, sessionKey, prompt);
       context.emit("queue:updated", { sessionId: session.id, sessionKey });
 
-      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined });
+      dispatchWebSessionRun(session, prompt, engine, config, context, { queueItemId, attachments: attachmentPaths.length > 0 ? attachmentPaths : undefined, claudeVariant });
 
       return json(res, { status: "queued", sessionId: session.id });
     }
@@ -2078,6 +2089,7 @@ async function runWebSession(
   config: JinnConfig,
   context: ApiContext,
   attachments?: string[],
+  claudeVariant?: "headless" | "interactive",
 ): Promise<void> {
   const currentSession = getSession(session.id);
   if (!currentSession) {
@@ -2161,6 +2173,7 @@ async function runWebSession(
       attachments: attachments?.length ? attachments : undefined,
       sessionId: currentSession.id,
       source: currentSession.source,
+      claudeVariant,
       onStream: (delta) => {
         const now = Date.now();
         if (now - lastHeartbeatAt >= 2000) {
@@ -2389,6 +2402,7 @@ async function runWebSession(
             cliFlags: employee?.cliFlags,
             sessionId: currentSession.id,
             source: currentSession.source,
+            claudeVariant,
             onStream: (delta) => {
               context.emit("session:delta", {
                 sessionId: currentSession.id,
