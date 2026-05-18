@@ -77,7 +77,10 @@ export function ChatPane({
     dbg(sessionId, 'useState-init messages', { seededCount: seed.length, seededFrom: pendingUserMessage ? 'pendingUserMessage' : 'empty' })
     return seed
   })
-  const [loading, setLoading] = useState(false)
+  // Seed loading=true when mounting with a pendingUserMessage (just-created new chat
+  // where the OLD pane's setLoading(true) was lost in the remount). Otherwise the
+  // thinking indicator wouldn't show until the first WS delta arrives.
+  const [loading, setLoading] = useState<boolean>(() => !!pendingUserMessage)
   const streamingTextRef = useRef('')
   const [streamingText, setStreamingText] = useState('')
   const intermediateStartRef = useRef<number>(-1)
@@ -371,7 +374,9 @@ export function ChatPane({
     // Clear streaming state immediately to avoid stale content flash
     streamingTextRef.current = ''
     setStreamingText('')
-    setLoading(false)
+    // NOTE: do NOT setLoading(false) here. Loading is owned by handleSend (true) and
+    // WS session:completed/stopped (false). Clearing here would clobber the lazy-init
+    // loading=true set by useState() when this pane mounted with pendingUserMessage.
     dbg(sessionId, 'effect[sessionId] calling loadSession')
     loadSession(sessionId)
   }, [sessionId]) // loadSession is stable (useCallback with [] deps)
