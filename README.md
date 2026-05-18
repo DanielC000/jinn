@@ -25,6 +25,8 @@ Because Jinn uses **Claude Code CLI under the hood** — Anthropic's own first-p
 
 Other frameworks can't do this. Anthropic [banned third-party tools from using Max subscription OAuth tokens](https://docs.anthropic.com/en/docs/claude-code/bedrock-vertex#max-plan) in January 2026. Since Jinn delegates to the official CLI, it's fully supported.
 
+And starting **June 15, 2026**, Anthropic stops subsidizing `claude -p` (headless one-shot mode) under the Max subscription — only the interactive TUI keeps billing as `cc_entrypoint=cli`. Most wrappers will silently start hitting your API credit pool. Jinn has already moved every Claude turn off `-p` and onto the real interactive TUI driven inside a PTY — see [How the Claude engine works](#-how-the-claude-engine-works-under-the-hood) below. Your subscription keeps working.
+
 ### 🧞 Jinn vs OpenClaw
 
 | | Jinn | OpenClaw |
@@ -107,6 +109,24 @@ Then open [http://localhost:7777](http://localhost:7777).
 The CLI sends commands to the gateway daemon. The daemon dispatches work to AI
 engines (Claude Code, Codex, Gemini CLI), manages connector integrations, runs
 scheduled cron jobs, and serves the web dashboard.
+
+## 🪄 How the Claude engine works under the hood
+
+Anthropic stops subsidizing `claude -p` under the Max subscription on **June 15, 2026** — only the interactive TUI keeps billing as `cc_entrypoint=cli`. So Jinn drives the real interactive `claude` binary, not the headless one-shot mode.
+
+Every Claude turn — cron jobs, Slack messages, the web Chat view, the web CLI view — flows through the same path:
+
+- **Real TUI under PTY.** The interactive `claude` binary runs inside a [node-pty](https://github.com/microsoft/node-pty) pseudo-terminal, byte-for-byte identical to typing `claude` at your shell. Anthropic's billing pipeline sees `cc_entrypoint=cli` and counts it against your Max subscription.
+- **Hooks for turn boundaries.** Jinn writes a per-session `--settings` file that registers Claude Code's own `SessionStart` / `Stop` / `StopFailure` / `PreToolUse` / `PostToolUse` hooks. A tiny `hook-relay.mjs` script POSTs each hook event back to the daemon over loopback with a shared secret, so the daemon knows exactly when a turn starts, finishes, or hits a rate limit — no screen-scraping required.
+- **Transcript tail for streaming.** Mid-turn output is streamed by tailing Claude Code's own JSONL transcript at `~/.claude/projects/<hash>/<sessionId>.jsonl` with a long-lived file handle. Same data Claude Code uses internally, no ANSI parsing.
+- **Per-session PTY reuse.** A `KEEP ALIVE` toggle per session decides whether the PTY survives across turns (snappy follow-ups, warm context) or is reaped after a configurable grace window (lower memory). Orphan PTYs are killed on daemon restart and on session delete.
+- **Same engine powers both UI views.** The web UI's Chat ↔ CLI toggle is just two views of the same PTY: Chat renders the parsed delta stream, CLI attaches `xterm.js` directly to the live terminal. One process, one billing event.
+- **Cost reconstruction.** At turn end the daemon sums token usage straight from the transcript JSONL — no need to parse cost from TUI output.
+- **Rate-limit handling.** A `StopFailure` hook carrying a rate-limit reason flips the session into the shared wait/retry loop used by every engine.
+
+**Codex and Gemini** keep the simple spawn-per-turn model (`spawn(bin, args)` per request). Neither has Claude's subscription-billing wrinkle, so neither needs a PTY.
+
+If you want to opt out and use the old headless mode, set `engines.claude.mode: headless` in `~/.jinn/config.yaml` — Jinn will fall back to `claude -p` for that engine.
 
 ## ⚙️ Configuration
 
