@@ -62,7 +62,22 @@ export function CliTerminal({
     wsRef.current = ws;
 
     ws.onmessage = (e) => {
+      // Text frames carry JSON control messages from the daemon. The PTY
+      // can respawn within the same session (e.g. KEEP ALIVE → daemon
+      // restarts claude); when it does, the daemon emits {"type":"reset"}
+      // so we can clear the previous PTY's scrollback before new bytes
+      // arrive on the (binary) data path. Data is always binary.
       if (typeof e.data === "string") {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg?.type === "reset") {
+            term.reset();
+            setHasOutput(false);
+            return;
+          }
+        } catch {
+          // Not JSON — fall through and treat as plain text output.
+        }
         term.write(e.data);
         if (e.data.length > 0) setHasOutput(true);
       } else {
