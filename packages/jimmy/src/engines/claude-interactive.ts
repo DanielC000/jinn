@@ -415,7 +415,17 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       // Clear scrollback so a stale farewell (Claude's "Resume this session…" hint
       // printed on SIGHUP shutdown) doesn't persist into the next PTY incarnation.
       const s = this.streams.get(jinnSessionId);
-      if (s) { s.chunks = []; s.totalBytes = 0; }
+      if (s) {
+        s.chunks = [];
+        s.totalBytes = 0;
+        // If no WS subscribers are attached, the entry is dead weight — drop it so
+        // the map doesn't leak entries for every session that ever ran. Subscribers,
+        // when present, are kept so a future respawn can notify them via Task 4's
+        // reset event; that path also clears the subscribers Set on full teardown.
+        if (s.subscribers.size === 0) {
+          this.streams.delete(jinnSessionId);
+        }
+      }
       // Release the lifecycle entry so the dead handle isn't picked up by a future
       // run() as "warm" — that would inject into a corpse.
       this.lifecycle.releaseSession(jinnSessionId);
@@ -526,7 +536,15 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
   subscribeOutput(sessionId: string, cb: (data: Buffer) => void): () => void {
     const stream = this.streamFor(sessionId);
     stream.subscribers.add(cb);
-    return () => { stream.subscribers.delete(cb); };
+    return () => {
+      stream.subscribers.delete(cb);
+      // If this was the last subscriber AND there's no warm PTY producing data,
+      // the streams entry is dead weight — drop it. Mirrors the onExit cleanup
+      // path for sessions whose WS outlived the PTY.
+      if (stream.subscribers.size === 0 && !this.lifecycle.getWarm(sessionId)) {
+        this.streams.delete(sessionId);
+      }
+    };
   }
 
   /** Write raw text to the warm PTY as a bracketed-paste + CR (same /@!-guard as injectPrompt). No-op if no warm PTY. */
