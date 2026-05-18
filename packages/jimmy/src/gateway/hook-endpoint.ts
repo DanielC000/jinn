@@ -18,6 +18,12 @@ export function handleHookPost(
   if (!ctx.remoteAddress || !LOOPBACK.has(ctx.remoteAddress)) {
     return { status: 403, body: "forbidden" };
   }
+  // Defense-in-depth: an empty server secret would allow any client (including one
+  // sending no header) to pass timingSafeEqual against an empty buffer. The daemon
+  // guards against this upstream in api.ts, but make the endpoint safe standalone.
+  if (!ctx.secret || ctx.secret.length === 0) {
+    return { status: 401, body: "unauthorized" };
+  }
   const a = Buffer.from(providedSecret ?? "", "utf-8");
   const b = Buffer.from(ctx.secret, "utf-8");
   if (a.length !== b.length || !timingSafeEqual(a, b)) {
