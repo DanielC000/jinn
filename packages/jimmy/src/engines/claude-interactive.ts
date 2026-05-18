@@ -176,7 +176,18 @@ function tailTranscript(filePath: string, onDelta: (d: StreamDelta) => void): Tr
         if (!handle || stopped) return;
         const size = stat.size - offset;
         const chunk = Buffer.alloc(size);
-        const { bytesRead } = await handle.read(chunk, 0, size, offset);
+        let bytesRead: number;
+        try {
+          ({ bytesRead } = await handle.read(chunk, 0, size, offset));
+        } catch (err) {
+          // Read failure (disk error, revoked fd, etc.) leaves the cached fh in
+          // an unusable state — close+null it so the next watcher event re-opens
+          // the file cleanly instead of looping forever on a dead fd.
+          try { await handle.close(); } catch { /* already gone */ }
+          if (fh === handle) fh = undefined;
+          logger.warn(`tailTranscript read failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
         offset += bytesRead;
         buf += chunk.subarray(0, bytesRead).toString("utf-8");
         const lines = buf.split("\n");
