@@ -1,7 +1,6 @@
 "use client"
 
 import { useState, useMemo, useRef, useEffect } from "react"
-import emojilib from "emojilib"
 import { EMOJI_POOL } from "@/lib/emoji-pool"
 
 interface EmojiPickerProps {
@@ -10,19 +9,33 @@ interface EmojiPickerProps {
   onClose: () => void
 }
 
-// Pre-build searchable list: each entry has the emoji + all keyword tags joined
-const ALL_EMOJIS: Array<{ emoji: string; keywords: string[] }> = []
-for (const [emoji, keywords] of Object.entries(emojilib as Record<string, string[]>)) {
-  ALL_EMOJIS.push({ emoji, keywords })
+interface EmojiEntry {
+  emoji: string
+  keywords: string[]
 }
 
 export function EmojiPicker({ current, onSelect, onClose }: EmojiPickerProps) {
   const [search, setSearch] = useState("")
+  const [emojis, setEmojis] = useState<EmojiEntry[] | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     inputRef.current?.focus()
+  }, [])
+
+  // Lazy-load emojilib only when picker is open (i.e., mounted)
+  useEffect(() => {
+    let cancelled = false
+    import("emojilib").then((mod) => {
+      if (cancelled) return
+      const data = (mod.default ?? mod) as Record<string, string[]>
+      const list = Object.entries(data).map(([emoji, keywords]) => ({ emoji, keywords }))
+      setEmojis(list)
+    })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -39,14 +52,14 @@ export function EmojiPicker({ current, onSelect, onClose }: EmojiPickerProps) {
     const q = search.toLowerCase().trim()
     if (!q) return null
     const results: Array<{ emoji: string; label: string }> = []
-    for (const entry of ALL_EMOJIS) {
+    for (const entry of (emojis ?? [])) {
       if (entry.keywords.some((kw) => kw.includes(q))) {
         results.push({ emoji: entry.emoji, label: entry.keywords[0] })
         if (results.length >= 80) break
       }
     }
     return results
-  }, [search])
+  }, [search, emojis])
 
   return (
     <div
@@ -81,6 +94,12 @@ export function EmojiPicker({ current, onSelect, onClose }: EmojiPickerProps) {
               ))}
             </div>
           </>
+        ) : emojis === null ? (
+          <div className="grid grid-cols-8 gap-1 opacity-30">
+            {Array.from({ length: 16 }).map((_, i) => (
+              <div key={i} className="h-9 rounded-[var(--radius-md,12px)] bg-[var(--fill-secondary)]" />
+            ))}
+          </div>
         ) : filtered.length === 0 ? (
           <p className="py-4 text-center text-xs text-[var(--text-tertiary)]">
             No emojis found for &ldquo;{search}&rdquo;

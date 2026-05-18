@@ -1,5 +1,5 @@
 "use client"
-import React, { useState, useRef, useEffect, useCallback } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { api } from '@/lib/api'
 import type { MediaAttachment } from '@/lib/conversations'
 import { MediaPreview } from './media-preview'
@@ -133,6 +133,21 @@ export function ChatInput({
   const [pendingAttachments, setPendingAttachments] = useState<MediaAttachment[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const rafRef = useRef<number | null>(null)
+
+  const resize = useCallback((el: HTMLTextAreaElement) => {
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(() => {
+      el.style.height = 'auto'
+      el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+    }
+  }, [])
 
   // Focus textarea when focusTrigger changes (e.g. "+ New" chat button clicked)
   useEffect(() => {
@@ -393,10 +408,9 @@ export function ChatInput({
   // Auto-resize textarea when value changes programmatically (e.g., from STT)
   useEffect(() => {
     if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 120) + 'px'
+      resize(textareaRef.current)
     }
-  }, [value])
+  }, [value, resize])
 
   async function handleMicClick() {
     if (stt.state === 'recording') {
@@ -410,12 +424,14 @@ export function ChatInput({
     }
   }
 
-  const filteredCommands = slashCommands.filter((c) =>
-    c.name?.toLowerCase().startsWith(commandFilter)
+  const filteredCommands = useMemo(
+    () => slashCommands.filter((c) => c.name?.toLowerCase().startsWith(commandFilter)),
+    [slashCommands, commandFilter]
   )
 
-  const filteredEmployees = employees.filter((e) =>
-    e.name?.toLowerCase().includes(mentionFilter)
+  const filteredEmployees = useMemo(
+    () => employees.filter((e) => e.name?.toLowerCase().includes(mentionFilter)),
+    [employees, mentionFilter]
   )
 
   const hasContent = value.trim().length > 0 || pendingAttachments.length > 0
@@ -528,9 +544,7 @@ export function ChatInput({
           disabled={disabled}
           className={`flex-1 bg-transparent border-none outline-none resize-none text-[var(--text-primary)] text-[length:var(--text-subheadline)] leading-5 max-h-30 min-h-5 h-5 p-0 m-0 ${disabled ? 'opacity-50' : 'opacity-100'}`}
           onInput={(e) => {
-            const target = e.target as HTMLTextAreaElement
-            target.style.height = 'auto'
-            target.style.height = Math.min(target.scrollHeight, 120) + 'px'
+            resize(e.target as HTMLTextAreaElement)
           }}
         />
 
