@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.11.0] - 2026-05-18
+
+### ✨ Features
+- **Interactive Claude engine** — every Claude turn (cron, connectors, web Chat, web CLI) now runs the real interactive `claude` TUI inside a node-pty pseudo-terminal. Bills as `cc_entrypoint=cli`, preserving Max subscription past Anthropic's June 15, 2026 cutoff that ends `claude -p` subsidy.
+- **Hook-driven turn boundaries** — per-session `--settings` file registers Claude Code's SessionStart/Stop/StopFailure/PreToolUse/PostToolUse hooks; a tiny `hook-relay.mjs` POSTs each event back to the daemon over loopback so turn lifecycle is detected without screen-scraping.
+- **Per-session KEEP ALIVE control** — toggle in web UI decides whether a PTY survives across turns (snappy follow-ups, warm context) or is reaped after the grace window. Orphan PTYs reaped on daemon restart.
+- **Web Chat ↔ CLI toggle per session** — `xterm.js` view of the live PTY (CLI mode) or parsed delta stream (Chat mode), persisted per session. One process, one billing event for either view.
+- **Recently-viewed chat keep-alive cache** — chats stay mounted in the web UI for instant switching.
+- **GatewayProvider consolidation** — single WebSocket replaces 5–7 per page in the web UI.
+
+### ⚡ Performance
+- **8–20s daemon GET latency → <100ms** during active turns. Root causes fixed:
+  - Ring-buffer PTY scrollback (was O(N) string realloc per data chunk → O(1) chunk-list ring)
+  - Transcript backfill made async + transactional (was sync `readFileSync` + N inserts per GET)
+  - Async transcript tail with long-lived `FileHandle` (was sync `statSync`+`openSync`+`readSync` per file-watch event)
+- **Web event-storm fix** — `events` array narrowed to frames consumers actually filter on; high-frequency consumers migrated to direct `subscribe()` callbacks.
+- **rAF-coalesced xterm window resize**, `hasOutput` short-circuit, static-import for hook endpoint.
+
+### 🐛 Fixes
+- **Tab status no longer goes stale** — chat tabs subscribe to session lifecycle events; blue "in progress" dot clears on completion and survives reload.
+- **No more title flash on tab click** — `sessionMeta` now tagged with its owning sessionId; effect refuses to write stale meta onto the newly-selected tab.
+- **Orphan tabs after sidebar delete** — `session:deleted` events now close matching tabs.
+- **Reconcile persisted tabs on load** — drops orphans, normalizes stale `running` status against authoritative server state.
+- **Rate-limit wait cancels on user stop** — was only catching `"error"` status, missed the `"idle"` user-initiated stop case.
+- **Heartbeat clears after session delete** — no more `status:"running"` writes against deleted rows.
+- **Hook endpoint hardening** — loopback check moved ahead of body read, 64 KB body cap, `crypto.timingSafeEqual` secret comparison, empty-secret bypass guard.
+- **File-mode 0o600 on `gateway.json`, `--settings`, and `~/.claude.json`** — hook secret no longer world-readable on shared machines.
+- **HookRegistry buffer GC** — periodic sweep evicts entries whose TTL expired; closes long-running memory leak.
+- **`streams` map cleanup on PTY exit**, **kill-mid-paste race closed** (`turnStarted` before `injectPrompt`), **PTY-reset control frame** sent to xterm on respawn, **async-tailer fd nulled on read error**.
+
+### 🪄 Docs
+- New README section: **"How the Claude engine works under the hood"** — PTY, hooks, transcript tail, KEEP ALIVE, Chat/CLI duality, and why we moved off `claude -p` before the subscription cutoff.
+
 ## [0.10.0] - 2026-04-28
 
 ### ✨ Features
