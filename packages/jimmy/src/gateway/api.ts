@@ -1870,6 +1870,14 @@ async function runWebSession(
 
     let lastHeartbeatAt = 0;
     const runHeartbeat = setInterval(() => {
+      // If the session was deleted mid-turn, stop heartbeating immediately —
+      // the engine.run promise may still take minutes to resolve, and we don't
+      // want to keep writing status:"running" rows for a session the user
+      // already removed (and risk re-creating registry state in some paths).
+      if (!getSession(currentSession.id)) {
+        clearInterval(runHeartbeat);
+        return;
+      }
       updateSession(currentSession.id, {
         status: "running",
         lastActivity: new Date().toISOString(),
@@ -1902,6 +1910,9 @@ async function runWebSession(
       sessionId: currentSession.id,
       source: currentSession.source,
       onStream: (delta) => {
+        // Same guard as runHeartbeat: a delta may arrive after the user
+        // deleted the session; don't resurrect registry state for it.
+        if (!getSession(currentSession.id)) return;
         const now = Date.now();
         if (now - lastHeartbeatAt >= 2000) {
           lastHeartbeatAt = now;
