@@ -417,7 +417,10 @@ export function ChatPane({
         ])
       }
     },
-    [sessionId, selectedEmployee, onSessionCreated, onRefresh]
+    // viewMode MUST be in deps — without it, toggling chat↔CLI keeps the stale
+    // closure value and routes CLI sends to the headless engine, which is
+    // exactly what made "the xterm shows stale content" reproducible.
+    [sessionId, selectedEmployee, onSessionCreated, onRefresh, viewMode, loading]
   )
 
   const handleStatusRequest = useCallback(async () => {

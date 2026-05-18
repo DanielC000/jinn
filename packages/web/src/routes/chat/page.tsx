@@ -15,8 +15,9 @@ import { useSettings } from '@/routes/settings-provider'
 import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query-keys'
 import { cn } from '@/lib/utils'
-import { Check, Copy, EllipsisVertical, PanelLeftClose, PanelLeftOpen, Plus, Trash2 } from 'lucide-react'
+import { Check, Copy, EllipsisVertical, PanelLeftClose, PanelLeftOpen, Plus, Share2, Trash2 } from 'lucide-react'
 import { writeViewMode, type ViewMode } from '@/lib/view-mode'
+import { shareDebugLog, clearDebugLog } from '@/lib/debug-log'
 
 class ChatErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -126,7 +127,6 @@ function ChatPage() {
   const [showSessionPicker, setShowSessionPicker] = useState(false)
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [focusTrigger, setFocusTrigger] = useState(0)
-  const moreMenuRef = useRef<HTMLDivElement>(null)
   const sessionPickerRef = useRef<HTMLDivElement>(null)
   const { events, connectionSeq, skillsVersion, subscribe } = useGateway()
   const chatTabs = useChatTabs()
@@ -139,11 +139,16 @@ function ChatPage() {
   const handleOrderComputed = useCallback((order: SidebarOrder) => { sidebarOrderRef.current = order }, [])
 
 
-  // Close more menu on outside click
+  // Close more menu on outside click. The moreMenu JSX is shared between the
+  // desktop tab bar and the mobile header (rendered twice in the DOM, one
+  // hidden via CSS), so a single ref points to only one copy — mobile taps
+  // would be seen as "outside" and close the menu. Use a data-attribute
+  // ancestor check instead so both copies count as "inside".
   useEffect(() => {
     if (!showMoreMenu && !showSessionPicker) return
     function handleClick(e: MouseEvent) {
-      if (showMoreMenu && moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+      const target = e.target as HTMLElement | null
+      if (showMoreMenu && target && !target.closest('[data-more-menu]')) {
         setShowMoreMenu(false)
       }
       if (showSessionPicker && sessionPickerRef.current && !sessionPickerRef.current.contains(e.target as Node)) {
@@ -249,6 +254,13 @@ function ChatPage() {
     [chatTabs]
   )
 
+  // Auto-focus the input on any session change (sidebar click, tab switch,
+  // keyboard nav, "+ New"). Effect runs after ChatPane (key=selectedId)
+  // remounts, so the bumped focusTrigger reaches the fresh ChatInput.
+  useEffect(() => {
+    setFocusTrigger(prev => prev + 1)
+  }, [selectedId])
+
   const handleNewChat = useCallback(() => {
     newChatIntentRef.current = true
     setSelectedId(null)
@@ -256,7 +268,6 @@ function ChatPage() {
     setMobileView('chat')
     setEmployeeSessions([])
     chatTabs.clearActiveTab()
-    setFocusTrigger(prev => prev + 1)
   }, [chatTabs])
 
   const handleSessionsLoaded = useCallback(
@@ -431,7 +442,7 @@ function ChatPage() {
 
   // More menu (shared between desktop tab bar and mobile header)
   const moreMenu = selectedId ? (
-    <div ref={moreMenuRef} className="relative">
+    <div data-more-menu className="relative">
       <button
         onClick={() => setShowMoreMenu((v) => !v)}
         aria-label="More options"
@@ -441,7 +452,7 @@ function ChatPage() {
       </button>
 
       {showMoreMenu && (
-        <div className="absolute right-0 top-full z-[200] mt-1 min-w-[220px] overflow-hidden rounded-[var(--radius-md)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-xl md:top-full md:mt-1 md:bottom-auto md:mb-0 max-md:top-auto max-md:bottom-full max-md:mt-0 max-md:mb-1">
+        <div className="absolute right-0 top-full z-[200] mt-1 min-w-[220px] overflow-hidden rounded-[var(--radius-md)] border border-border bg-[var(--material-thick)] shadow-[var(--shadow-overlay)] backdrop-blur-xl">
           {/* Mobile-only Chat/CLI toggle — the desktop one lives in the tab bar's toolbarActions */}
           <div className="flex items-center gap-1 px-3 py-2 md:hidden">
             <button
@@ -488,6 +499,19 @@ function ChatPage() {
           >
             <Copy className="size-3.5" />
             <span className="flex-1">{duplicateSessionMutation.isPending ? 'Duplicating...' : 'Duplicate...'}</span>
+          </button>
+          <button
+            onClick={() => { setShowMoreMenu(false); shareDebugLog() }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent"
+          >
+            <Share2 className="size-3.5" />
+            <span className="flex-1">Share debug log</span>
+          </button>
+          <button
+            onClick={() => { setShowMoreMenu(false); clearDebugLog() }}
+            className="block w-full px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-accent"
+          >
+            Clear debug log
           </button>
           <div className="my-0.5 border-t border-border" />
           <button

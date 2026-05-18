@@ -148,11 +148,16 @@ export function ChatInput({
     }
   }, [])
 
-  // Focus textarea when focusTrigger changes (e.g. "+ New" chat button clicked)
+  // Focus textarea when focusTrigger changes (session select / "+ New").
+  // Skip on mobile — auto-focus pops the on-screen keyboard, which is jarring
+  // when the trigger is a session switch the user did with their thumb.
+  // Defer with requestAnimationFrame so the textarea has finished mounting
+  // after ChatPane's key-driven remount.
   useEffect(() => {
-    if (focusTrigger && focusTrigger > 0) {
-      textareaRef.current?.focus()
-    }
+    if (!focusTrigger || focusTrigger <= 0) return
+    if (window.innerWidth < 768) return
+    const raf = requestAnimationFrame(() => textareaRef.current?.focus())
+    return () => cancelAnimationFrame(raf)
   }, [focusTrigger])
   const mentionItemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
 

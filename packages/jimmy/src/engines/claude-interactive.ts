@@ -343,6 +343,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
      *  so their xterm doesn't render the new alt-screen atop the old one's cells. */
     hasSeenPty: boolean;
   }>();
+  /** Last terminal geometry reported by the client per session. Used to spawn
+   *  follow-up PTYs at the correct dimensions when a turn comes in after the
+   *  warm PTY was reaped — otherwise spawn() falls back to 120×40 and the TUI
+   *  text body is locked in at the wrong width. */
+  private lastGeom = new Map<string, { cols: number; rows: number }>();
 
   constructor(
     private lifecycle: PtyLifecycleManager,
@@ -529,11 +534,12 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     });
     const env = this.buildPtyEnv();
     const bin = opts.bin || "claude";
-    logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"})`);
+    const geom = this.lastGeom.get(jinnSessionId);
+    logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"}, geom: ${geom ? `${geom.cols}×${geom.rows}` : "default"})`);
     const proc = pty.spawn(bin, args, {
       name: "xterm-256color",
-      cols: 120,
-      rows: 40,
+      cols: geom?.cols ?? 120,
+      rows: geom?.rows ?? 40,
       cwd: opts.cwd || JINN_HOME,
       env,
     });
@@ -548,7 +554,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
    *  resumes that session; otherwise spawns a fresh `claude` so a brand-new CLI-mode
    *  session shows the TUI before the user types anything.
    *  Does NOTHING if a warm PTY already exists or a turn is starting. */
-  ensureIdleSpawn(jinnSessionId: string, opts: { claudeSessionId?: string; cwd?: string; model?: string; bin?: string }): void {
+  ensureIdleSpawn(jinnSessionId: string, opts: { claudeSessionId?: string; cwd?: string; model?: string; bin?: string; cols?: number; rows?: number }): void {
     if (this.lifecycle.getWarm(jinnSessionId)) return;
     if (this.active.has(jinnSessionId)) return; // a turn is starting/running — let run() spawn
     const settingsPath = writeSessionSettings(CLAUDE_SETTINGS_DIR, jinnSessionId, {
@@ -565,11 +571,16 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     if (opts.model) args.push("--model", opts.model);
     const env = this.buildPtyEnv();
     const bin = opts.bin || "claude";
-    logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.claudeSessionId || "none — fresh"})`);
+    // Caller (pty-ws) passes the client's current cols/rows. Cache them so a
+    // future cold spawn through run() picks up the right geometry too.
+    const cols = opts.cols ?? this.lastGeom.get(jinnSessionId)?.cols ?? 120;
+    const rows = opts.rows ?? this.lastGeom.get(jinnSessionId)?.rows ?? 40;
+    if (opts.cols && opts.rows) this.lastGeom.set(jinnSessionId, { cols: opts.cols, rows: opts.rows });
+    logger.info(`InteractiveClaudeEngine ensureIdleSpawn for session ${jinnSessionId} (resume ${opts.claudeSessionId || "none — fresh"}, geom ${cols}×${rows})`);
     const proc = pty.spawn(bin, args, {
       name: "xterm-256color",
-      cols: 120,
-      rows: 40,
+      cols,
+      rows,
       cwd: opts.cwd || JINN_HOME,
       env,
     });
@@ -642,8 +653,9 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     pasteAndSubmit(proc, text);
   }
 
-  /** Resize the warm PTY. No-op if no warm PTY. */
+  /** Resize the warm PTY + remember the geometry for the next cold spawn. */
   resizePty(sessionId: string, cols: number, rows: number): void {
+    this.lastGeom.set(sessionId, { cols, rows });
     const handle = this.lifecycle.getWarm(sessionId);
     if (!handle) return;
     const proc = (handle as any)._proc as pty.IPty | undefined;

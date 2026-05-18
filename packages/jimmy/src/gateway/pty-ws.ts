@@ -7,29 +7,30 @@ import { JINN_HOME } from "../shared/paths.js";
  * Attach a /ws/pty/:sessionId WebSocket to a session's interactive PTY stream.
  *
  * Lifecycle:
- *   - On connect: eager-spawn the PTY if no warm one exists (resumes the conversation
- *     when an engineSessionId is known, otherwise spawns fresh — so a brand-new CLI-mode
- *     session shows the TUI before the user types anything).
+ *   - PTY spawn is DEFERRED until the client sends its first `{type:"resize"}`
+ *     message so claude starts at the real terminal geometry. Eager-spawning
+ *     at default 120×40 then resizing caused claude to lay text body at 120 cols
+ *     and never reflow it back, producing "squished" rendering on mobile.
  *   - The frontend sends `{type:"viewing", viewing:true|false}` on mount, unmount, and
  *     Page Visibility changes. Each enter is ref-counted; when the count reaches zero
  *     (and no turn is running), the 10-min keep-alive grace window starts.
- *   - On `viewing:true` after a reap, re-spawns to auto-resume transparently.
+ *   - `viewing:true` triggers a follow-up resize from the client (see use-page-visibility
+ *     effect in cli-terminal.tsx) which spawns/respawns the PTY at the correct geometry.
  *   - On `ws.close`, decrements the viewer count if this socket reported viewing.
  *     Does NOT directly kill the PTY — the lifecycle manager owns that.
  */
 export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: InteractiveClaudeEngine): void {
-  const spawnIfNeeded = () => {
+  const spawnIfNeeded = (cols: number, rows: number) => {
     if (engine.hasWarmPty(sessionId)) return;
     const session = getSession(sessionId);
     engine.ensureIdleSpawn(sessionId, {
       claudeSessionId: session?.engineSessionId ?? undefined,
       model: session?.model ?? undefined,
       cwd: JINN_HOME,
+      cols,
+      rows,
     });
   };
-
-  // Eager spawn so the terminal shows the TUI immediately on session open.
-  spawnIfNeeded();
 
   // Subscribe FIRST, then replay scrollback. Reverse order had a race window
   // between snapshot and subscribe where PTY bytes could be lost — the snapshot
@@ -43,7 +44,7 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
     (event) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(event)); },
   );
 
-  // Replay scrollback (may now include the idle-spawn's first bytes).
+  // Replay scrollback if the PTY is already warm from a prior connection.
   const scrollback = engine.getScrollback(sessionId);
   if (scrollback.length > 0 && ws.readyState === ws.OPEN) ws.send(scrollback);
 
@@ -51,6 +52,23 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
   // decrement only if it actually incremented. Guards against double-decrement
   // on flaky reconnects.
   let didEnter = false;
+  // The client sends `viewing:true` on WS open BEFORE its first resize. With
+  // lazy spawn, the lifecycle entry doesn't exist yet, so a naïve setViewing
+  // is silently dropped — and the freshly-spawned PTY starts with viewerCount=0
+  // and gets reaped by the sweep timer within seconds. Buffer the viewing
+  // state and apply it the moment the first resize creates the entry.
+  let pendingViewing: boolean | null = null;
+  let entryReady = false;
+
+  const applyViewing = (viewing: boolean) => {
+    if (viewing && !didEnter) {
+      engine.setViewing(sessionId, true);
+      didEnter = true;
+    } else if (!viewing && didEnter) {
+      engine.setViewing(sessionId, false);
+      didEnter = false;
+    }
+  };
 
   ws.on("message", (raw) => {
     let msg: any;
@@ -58,21 +76,24 @@ export function attachPtyWebSocket(ws: WebSocket, sessionId: string, engine: Int
     if (msg?.type === "stdin" && typeof msg.data === "string") {
       engine.writeStdin(sessionId, msg.data);
     } else if (msg?.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+      // First resize spawns the PTY at the real client geometry; subsequent
+      // resizes just forward SIGWINCH to claude.
+      spawnIfNeeded(msg.cols, msg.rows);
       engine.resizePty(sessionId, msg.cols, msg.rows);
-    } else if (msg?.type === "viewing" && typeof msg.viewing === "boolean") {
-      if (msg.viewing) {
-        // If the PTY was reaped during a hidden tab, respawn before counting the viewer.
-        spawnIfNeeded();
-        if (!didEnter) {
-          engine.setViewing(sessionId, true);
-          didEnter = true;
-        }
-      } else {
-        if (didEnter) {
-          engine.setViewing(sessionId, false);
-          didEnter = false;
+      if (!entryReady) {
+        entryReady = true;
+        if (pendingViewing !== null) {
+          applyViewing(pendingViewing);
+          pendingViewing = null;
         }
       }
+    } else if (msg?.type === "viewing" && typeof msg.viewing === "boolean") {
+      if (!entryReady) {
+        // Stash for after first resize triggers spawn.
+        pendingViewing = msg.viewing;
+        return;
+      }
+      applyViewing(msg.viewing);
     }
   });
 

@@ -336,6 +336,15 @@
    Base Styles
    ============================================ */
 
+html, body {
+  /* Lock the page itself so iOS Safari uses inner containers as scroll
+     surfaces. Without this, swipes anywhere rubber-band the whole document
+     instead of scrolling the chat / sidebar internally. */
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 html {
   scroll-behavior: smooth;
   -webkit-tap-highlight-color: transparent;
@@ -735,4 +744,46 @@ body {
 .xterm-screen {
   margin-left: auto !important;
   margin-right: auto !important;
+}
+
+/* xterm.js: let the browser treat the terminal subtree as a vertical pan
+   surface. The actual mobile scroll plumbing lives in cli-terminal.tsx
+   (touchmove → term.scrollLines()), because iOS Safari can't natively scroll
+   xterm's absolutely-positioned overflow viewport. Desktop wheel works via
+   xterm's own wheel listener. */
+.xterm,
+.xterm-viewport {
+  touch-action: pan-y !important;
+}
+.xterm-viewport {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* xterm uses .xterm-helper-textarea as a hidden input proxy for keyboard
+   events. A click anywhere in the terminal focuses this textarea, stealing
+   focus from our sibling ChatInput. With pointer-events: none it can't
+   intercept clicks/taps — selection still works because xterm's selection
+   layer is on a different element. */
+.xterm-helper-textarea {
+  pointer-events: none !important;
+}
+
+/* Explicitly allow text selection in the terminal so users can drag-select on
+   desktop and long-press → Copy on iOS. xterm's defaults usually permit this
+   but inherited rules from our wrapper could break it. */
+.xterm,
+.xterm-screen,
+.xterm-rows {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Any scrollable container in the app should NOT chain its scroll to the page
+   when it hits its top/bottom edge — iOS Safari's default behaviour creates
+   rubber-band on every flick. Use the data-scrollable hook plus the explicit
+   chat-messages-scroll class so existing components automatically benefit. */
+.chat-messages-scroll,
+[data-scrollable] {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }

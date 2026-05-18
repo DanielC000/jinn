@@ -70,11 +70,20 @@ function serveStatic(
     return true;
   }
 
+  // Hashed assets (Vite emits /assets/<name>-<hash>.<ext>) are content-addressed
+  // — safe to cache forever. Everything else (index.html, root files) must
+  // revalidate so the user picks up new hash refs after a deploy. Without this,
+  // iOS Safari over Tailscale caches HTML indefinitely and serves stale JS/CSS.
+  const isHashedAsset = urlPath.startsWith("/assets/");
+  const cacheControl = isHashedAsset
+    ? "public, max-age=31536000, immutable"
+    : "no-cache";
+
   if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) {
     // SPA fallback to index.html for client-side routing
     const indexPath = path.join(webDir, "index.html");
     if (fs.existsSync(indexPath)) {
-      res.writeHead(200, { "Content-Type": "text/html" });
+      res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-cache" });
       fs.createReadStream(indexPath).pipe(res);
       return true;
     }
@@ -83,7 +92,7 @@ function serveStatic(
 
   const ext = path.extname(resolved);
   const contentType = MIME_TYPES[ext] || "application/octet-stream";
-  res.writeHead(200, { "Content-Type": contentType });
+  res.writeHead(200, { "Content-Type": contentType, "Cache-Control": cacheControl });
   fs.createReadStream(resolved).pipe(res);
   return true;
 }

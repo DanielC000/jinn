@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { usePageVisibility } from "../hooks/use-page-visibility";
+import { dlog } from "../lib/debug-log";
 
 function getPtyWsUrl(sessionId: string): string {
   const gatewayUrl = process.env.NEXT_PUBLIC_GATEWAY_URL;
@@ -50,16 +51,34 @@ export function CliTerminal({ sessionId }: { sessionId: string }) {
       theme: { background: "#0b0b0c" },
       scrollback: 5000,
       scrollOnUserInput: true,
+      // Display-only: input flows through the sibling ChatInput, never via
+      // xterm. Disabling stdin drops xterm's hidden helper textarea + its
+      // pointer/touch handlers, which were absorbing one-finger swipes on iOS
+      // before they could reach .xterm-viewport's scrollable area.
+      disableStdin: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
-    fit.fit();
+    // NOTE: deliberately NOT calling fit.fit() synchronously here. On direct
+    // CLI mount the container hasn't laid out yet (width 0), so a sync fit
+    // would lock xterm to ~0 cols and the backend PTY would render claude's
+    // TUI at that bogus width. scheduleFit() below (run in rAF + on first
+    // ResizeObserver tick) fits at real dimensions and emits the resize then.
 
     const wsUrl = getPtyWsUrl(sessionId);
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
+
+    // iOS Safari renders certain monochrome TUI glyphs (⏺ U+23FA, ⏵ U+23F5, etc.)
+    // as colour emoji when the font lacks a text glyph. Appending U+FE0E (text
+    // presentation selector) forces the text form. font-variant-emoji works only on
+    // Safari 17.4+; this byte-stream fix works everywhere. Decode → patch → write
+    // is safe because xterm.write accepts strings and U+FE0E is zero-width.
+    const TEXT_PRESENT_GLYPHS = /[⏰-⏿■-◿☀-⛿]/g;
+    const decoder = new TextDecoder("utf-8");
+    const forceTextGlyphs = (s: string) => s.replace(TEXT_PRESENT_GLYPHS, (m) => m + "︎");
 
     ws.onmessage = (e) => {
       // Text frames carry JSON control messages from the daemon. The PTY
@@ -78,47 +97,107 @@ export function CliTerminal({ sessionId }: { sessionId: string }) {
         } catch {
           // Not JSON — fall through and treat as plain text output.
         }
-        term.write(e.data);
+        term.write(forceTextGlyphs(e.data));
         if (!hasOutputRef.current && e.data.length > 0) markHasOutput(true);
       } else {
         const bytes = new Uint8Array(e.data as ArrayBuffer);
-        term.write(bytes);
+        term.write(forceTextGlyphs(decoder.decode(bytes, { stream: true })));
         if (!hasOutputRef.current && bytes.byteLength > 0) markHasOutput(true);
       }
     };
 
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      dlog("xterm", `ws.onopen wrapper=${containerRef.current?.getBoundingClientRect().width.toFixed(0) ?? "?"}x${containerRef.current?.getBoundingClientRect().height.toFixed(0) ?? "?"}`);
       // Initial viewing report — backend ref-counts viewers and uses this to
       // keep the PTY warm (or auto-respawn on return if it was reaped).
       ws.send(JSON.stringify({ type: "viewing", viewing: document.visibilityState === "visible" }));
+      // Defer the resize message until after fit runs at real dimensions —
+      // see scheduleFit below.
+      scheduleFit();
     };
+    ws.onclose = (ev) => dlog("xterm", `ws.onclose code=${ev.code} reason=${ev.reason || "—"}`);
+    ws.onerror = () => dlog("xterm", "ws.onerror");
 
     // Coalesce a burst of `resize` events (window drag, mobile rotation,
     // devtools open) into one fit + one WS frame per animation frame. Without
     // this, fit.fit() and a WS resize message fire per pixel during a drag.
+    // The cols>0/rows>0 guard prevents broadcasting a (0,0) geometry to the
+    // PTY when this runs before the wrapper has laid out.
     let raf: number | null = null;
+    let fitCount = 0;
     const scheduleFit = () => {
       if (raf !== null) cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         raf = null;
-        fit.fit();
-        if (ws.readyState === WebSocket.OPEN) {
+        const rect = containerRef.current?.getBoundingClientRect();
+        // Don't fit/spawn when the wrapper hasn't laid out yet — fit() would
+        // compute cols=11 from xterm's 0px canvas and the backend would spawn
+        // claude at cols=11, locking the TUI text body into a squished column
+        // even after a later resize. Wait for ResizeObserver to fire with real
+        // dimensions instead.
+        if (!rect || rect.width < 50 || rect.height < 30) {
+          dlog("xterm", `fit-skipped wrapper=${rect?.width.toFixed(0) ?? "?"}x${rect?.height.toFixed(0) ?? "?"}`);
+          return;
+        }
+        try { fit.fit(); } catch { /* container not yet sized */ }
+        fitCount++;
+        dlog("xterm", `fit#${fitCount} wrapper=${rect.width.toFixed(0)}x${rect.height.toFixed(0)} cols=${term.cols} rows=${term.rows}`);
+        if (term.cols > 0 && term.rows > 0 && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+          dlog("xterm", `ws.send resize cols=${term.cols} rows=${term.rows}`);
         }
       });
     };
     window.addEventListener("resize", scheduleFit);
+    // Kick off the initial fit on the next frame so layout has settled.
+    scheduleFit();
 
     // ChatInput sits beside us as a flex sibling and grows when the user attaches
     // files. Without this observer the xterm container height shrinks but xterm
     // keeps its old row count — text gets clipped at the bottom.
-    const ro = new ResizeObserver(scheduleFit);
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[0];
+      if (e) dlog("xterm", `ResizeObserver wrapper=${e.contentRect.width.toFixed(0)}x${e.contentRect.height.toFixed(0)}`);
+      scheduleFit();
+    });
     ro.observe(containerRef.current);
+
+    // Touch-to-scroll via xterm's own scrollLines() API. iOS Safari has a known
+    // quirk: assigning .scrollTop on an absolutely-positioned overflow:scroll
+    // element (which is exactly what .xterm-viewport is) updates the property
+    // but doesn't visually scroll. xterm's term.scrollLines() goes through its
+    // render pipeline instead and works on every browser. Each ~17px of swipe
+    // delta = 1 buffer line; we diff against the last sent count so a single
+    // long drag accumulates smoothly without per-frame compounding.
+    const wrapper = containerRef.current;
+    const PX_PER_LINE = 17;
+    let touchStartY = 0;
+    let linesSent = 0;
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      touchStartY = e.touches[0].clientY;
+      linesSent = 0;
+      dlog("touch", `start Y=${touchStartY.toFixed(0)}`);
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const totalDelta = touchStartY - e.touches[0].clientY;
+      const targetLines = Math.trunc(totalDelta / PX_PER_LINE);
+      const linesToScroll = targetLines - linesSent;
+      if (linesToScroll === 0) return;
+      // term.scrollLines: positive = scroll down (toward newer/bottom).
+      // Swipe up (finger up, delta>0) → see newer → scroll down → positive.
+      term.scrollLines(linesToScroll);
+      linesSent = targetLines;
+    };
+    wrapper.addEventListener("touchstart", onTouchStart, { passive: true });
+    wrapper.addEventListener("touchmove", onTouchMove, { passive: true });
 
     return () => {
       window.removeEventListener("resize", scheduleFit);
       ro.disconnect();
+      wrapper.removeEventListener("touchstart", onTouchStart);
+      wrapper.removeEventListener("touchmove", onTouchMove);
       if (raf !== null) cancelAnimationFrame(raf);
       // Explicit viewing:false before close so the backend decrements promptly
       // (close handler also decrements as a safety net, but this is cleaner).
@@ -133,10 +212,15 @@ export function CliTerminal({ sessionId }: { sessionId: string }) {
 
   // Page Visibility — emit on backgrounding/foregrounding so the backend can
   // start the 10-min grace timer (hidden) or trigger auto-resume respawn (visible).
+  // On return-to-visible, the backend also needs a fresh resize to spawn the PTY
+  // at the correct geometry (pty-ws now spawns lazily on first resize). The
+  // scheduleFit hook is set up inside the main effect; we dispatch a synthetic
+  // resize event to trigger it without leaking a ref out of that effect.
   useEffect(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     try { ws.send(JSON.stringify({ type: "viewing", viewing: visible })); } catch { /* ignore */ }
+    if (visible) window.dispatchEvent(new Event("resize"));
   }, [visible]);
 
   if (!sessionId) {
@@ -172,7 +256,7 @@ export function CliTerminal({ sessionId }: { sessionId: string }) {
         boxSizing: "border-box",
       }}
     >
-      <div ref={containerRef} style={{ height: "100%", width: "100%", overflow: "hidden", background: "#0b0b0c" }} />
+      <div ref={containerRef} tabIndex={-1} style={{ height: "100%", width: "100%", overflow: "hidden", background: "#0b0b0c" }} />
       {!hasOutput && (
         <div
           style={{
