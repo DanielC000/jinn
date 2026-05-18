@@ -1,4 +1,3 @@
-'use client'
 
 import type { KanbanTicket, TicketStatus, TicketPriority, WorkState } from './types'
 

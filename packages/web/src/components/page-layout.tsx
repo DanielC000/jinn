@@ -1,9 +1,6 @@
-"use client"
 
-import { useState } from "react"
-import Link from "next/link"
-import { usePathname } from "next/navigation"
-import dynamic from "next/dynamic"
+import { lazy, Suspense, useState } from "react"
+import { Link, useLocation } from "react-router-dom"
 import { useSettings } from "@/app/settings-provider"
 import { Sidebar } from "./sidebar"
 import { NotificationBell } from "./notifications/notification-bell"
@@ -13,13 +10,13 @@ import { Menu, X } from "lucide-react"
 import { NAV_ITEMS } from "@/lib/nav"
 import { cn } from "@/lib/utils"
 
-const GlobalSearch = dynamic(() => import("./global-search").then(m => m.GlobalSearch), { ssr: false })
-const LiveStreamWidget = dynamic(() => import("./live-stream-widget").then(m => m.LiveStreamWidget), { ssr: false })
-const OnboardingWizard = dynamic(() => import("./onboarding-wizard").then(m => m.OnboardingWizard), { ssr: false })
+const GlobalSearch = lazy(() => import("./global-search").then(m => ({ default: m.GlobalSearch })))
+const LiveStreamWidget = lazy(() => import("./live-stream-widget").then(m => ({ default: m.LiveStreamWidget })))
+const OnboardingWizard = lazy(() => import("./onboarding-wizard").then(m => ({ default: m.OnboardingWizard })))
 
 function MobileHeader({ actions }: { actions?: React.ReactNode }) {
   const [open, setOpen] = useState(false)
-  const pathname = usePathname()
+  const pathname = useLocation().pathname
   const { settings } = useSettings()
   const emoji = settings.portalEmoji ?? "\u{1F9DE}"
   const portalName = settings.portalName ?? "Jinn"
@@ -68,7 +65,7 @@ function MobileHeader({ actions }: { actions?: React.ReactNode }) {
                 return (
                   <Link
                     key={item.href}
-                    href={item.href}
+                    to={item.href}
                     onClick={() => setOpen(false)}
                     className={cn(
                       "flex h-11 items-center gap-3 rounded-[10px] px-3.5 text-[15px] transition-colors",
@@ -88,7 +85,7 @@ function MobileHeader({ actions }: { actions?: React.ReactNode }) {
       )}
 
       {/* CSS animation */}
-      <style jsx global>{`
+      <style>{`
         @keyframes slideInLeft {
           from { transform: translateX(-100%); }
           to { transform: translateX(0); }
@@ -121,7 +118,9 @@ export function PageLayout({ children, mobileHeaderActions }: { children: React.
   return (
     <div className="flex h-dvh overflow-hidden bg-background">
       <Sidebar />
-      <GlobalSearch />
+      <Suspense fallback={null}>
+        <GlobalSearch />
+      </Suspense>
       <main className="flex-1 overflow-hidden flex flex-col lg:ml-[56px]">
         <MobileHeader actions={mobileHeaderActions} />
         <DesktopHeader />
@@ -129,8 +128,12 @@ export function PageLayout({ children, mobileHeaderActions }: { children: React.
           {children}
         </div>
       </main>
-      <LiveStreamWidget />
-      <OnboardingWizard />
+      <Suspense fallback={null}>
+        <LiveStreamWidget />
+      </Suspense>
+      <Suspense fallback={null}>
+        <OnboardingWizard />
+      </Suspense>
     </div>
   )
 }

@@ -1,4 +1,3 @@
-"use client"
 
 import { useSettings } from "@/app/settings-provider"
 import { emojiForName } from "@/lib/emoji-pool"

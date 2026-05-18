@@ -1,7 +1,6 @@
-"use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from "react-router-dom"
 import {
   Home, MessageSquare, Users, LayoutGrid, Clock,
   Activity, Zap, Settings, Plus, Hash,
@@ -63,7 +62,7 @@ export function GlobalSearch() {
   const portalName = settings.portalName ?? "Jinn"
   const [open, setOpen] = useState(false)
   const [recents, setRecents] = useState<RecentItem[]>([])
-  const router = useRouter()
+  const goTo = useNavigate()
 
   const { data: orgData } = useOrg()
   const { data: cronJobs } = useCronJobs()
@@ -90,8 +89,8 @@ export function GlobalSearch() {
   const navigate = useCallback((href: string, item: RecentItem) => {
     saveRecent(item)
     setOpen(false)
-    router.push(href)
-  }, [router])
+    goTo(href)
+  }, [goTo])
 
   const employeeNames: string[] = Array.isArray(orgData?.employees)
     ? orgData.employees.map((e) => e.name)
@@ -142,7 +141,7 @@ export function GlobalSearch() {
 
               {/* Actions */}
               <CommandGroup heading="Actions">
-                <CommandItem onSelect={() => { setOpen(false); router.push('/chat') }}>
+                <CommandItem onSelect={() => { setOpen(false); goTo('/chat') }}>
                   <Plus size={16} className="mr-2 opacity-50" />
                   New Chat
                 </CommandItem>

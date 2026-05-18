@@ -1,4 +1,3 @@
-"use client"
 import React, { useState, useCallback, useEffect, useRef, useMemo, Suspense } from 'react'
 import { api } from '@/lib/api'
 import { useGateway } from '@/hooks/use-gateway'

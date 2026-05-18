@@ -1,4 +1,3 @@
-"use client"
 
 import { useState, useCallback, useEffect, useMemo } from 'react'
 

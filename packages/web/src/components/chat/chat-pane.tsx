@@ -1,7 +1,5 @@
-"use client"
 
-import { useState, useCallback, useEffect, useRef } from 'react'
-import dynamic from 'next/dynamic'
+import { lazy, Suspense, useState, useCallback, useEffect, useRef } from 'react'
 import { api } from '@/lib/api'
 import { useOrg } from '@/hooks/use-employees'
 import { ChatMessages } from '@/components/chat/chat-messages'
@@ -9,7 +7,7 @@ import { ChatInput } from '@/components/chat/chat-input'
 import { ChatEmployeePicker } from '@/components/chat/chat-employee-picker'
 import { QueuePanel } from '@/components/chat/queue-panel'
 
-const CliTerminal = dynamic(() => import('@/components/cli-terminal').then(m => m.CliTerminal), { ssr: false })
+const CliTerminal = lazy(() => import('@/components/cli-terminal').then(m => ({ default: m.CliTerminal })))
 import { buildNewSessionParams } from '@/components/chat/new-chat-helpers'
 import type { Employee } from '@/lib/api'
 import type { Message, MediaAttachment } from '@/lib/conversations'
@@ -630,7 +628,9 @@ export function ChatPane({
 
       {/* Messages / CLI transcript */}
       {viewMode === 'cli' && sessionId ? (
-        <CliTerminal sessionId={sessionId} onSend={handleSend} />
+        <Suspense fallback={null}>
+          <CliTerminal sessionId={sessionId} onSend={handleSend} />
+        </Suspense>
       ) : (sessionId || messages.length > 0) ? (
         <ChatMessages messages={messages} loading={loading} streamingText={streamingText} />
       ) : null}

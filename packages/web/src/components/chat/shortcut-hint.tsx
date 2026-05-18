@@ -1,4 +1,3 @@
-"use client"
 
 interface ShortcutHintProps {
   onClick: () => void

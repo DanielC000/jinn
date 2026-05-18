@@ -1,6 +1,4 @@
-"use client";
-import { useEffect, useState, useRef, useCallback } from "react";
-import dynamic from "next/dynamic";
+import { lazy, Suspense, useEffect, useState, useRef, useCallback } from "react";
 import { api } from "@/lib/api";
 import type { Employee, OrgData, OrgHierarchy } from "@/lib/api";
 import { EmployeeDetail } from "@/components/org/employee-detail";
@@ -12,17 +10,14 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useSettings } from "@/app/settings-provider";
 import { useBreadcrumbs } from "@/context/breadcrumb-context";
 
-const OrgMap = dynamic(
-  () =>
-    import("@/components/org/org-map").then((m) => ({ default: m.OrgMap })),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex flex-col items-center justify-center h-full gap-[var(--space-3)] text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
-        Loading map...
-      </div>
-    ),
-  },
+const OrgMap = lazy(() =>
+  import("@/components/org/org-map").then((m) => ({ default: m.OrgMap })),
+);
+
+const OrgMapFallback = (
+  <div className="flex flex-col items-center justify-center h-full gap-[var(--space-3)] text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
+    Loading map...
+  </div>
 );
 
 export default function OrgPage() {
@@ -128,12 +123,14 @@ export default function OrgPage() {
                   Loading...
                 </div>
               ) : (
-                <OrgMap
-                  employees={employees}
-                  hierarchy={hierarchy}
-                  selectedName={selected?.name ?? null}
-                  onNodeClick={handleSelectEmployee}
-                />
+                <Suspense fallback={OrgMapFallback}>
+                  <OrgMap
+                    employees={employees}
+                    hierarchy={hierarchy}
+                    selectedName={selected?.name ?? null}
+                    onNodeClick={handleSelectEmployee}
+                  />
+                </Suspense>
               )}
             </TabsContent>
 

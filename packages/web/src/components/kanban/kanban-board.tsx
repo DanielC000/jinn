@@ -1,4 +1,3 @@
-"use client"
 
 import { COLUMNS } from '@/lib/kanban/types'
 import type { KanbanTicket, TicketStatus } from '@/lib/kanban/types'

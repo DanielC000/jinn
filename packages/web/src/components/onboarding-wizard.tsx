@@ -1,7 +1,6 @@
-"use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useNavigate } from "react-router-dom"
 import {
   MessageSquare,
   Users,
@@ -69,7 +68,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
     setLanguage,
   } = useSettings()
   const { theme, setTheme } = useTheme()
-  const router = useRouter()
+  const navigate = useNavigate()
 
   const [visible, setVisible] = useState(false)
   const [step, setStep] = useState(0)
@@ -134,7 +133,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
       }
       setVisible(false)
       onClose?.()
-      router.push("/chat")
+      navigate("/chat")
     }
   }, [
     step,
@@ -144,7 +143,7 @@ export function OnboardingWizard({ forceOpen, onClose }: OnboardingWizardProps) 
     onClose,
     setPortalName,
     setOperatorName,
-    router,
+    navigate,
   ])
 
   const handleBack = useCallback(() => {

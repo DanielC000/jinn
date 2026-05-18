@@ -1,4 +1,3 @@
-"use client"
 
 import type { Employee } from "@/lib/api"
 import { cn } from "@/lib/utils"

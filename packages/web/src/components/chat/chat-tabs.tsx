@@ -1,4 +1,3 @@
-"use client"
 
 import { useRef, useState, type MouseEvent, type DragEvent, type ReactNode } from 'react'
 import { X, Plus, PanelLeftOpen, PanelLeftClose } from 'lucide-react'

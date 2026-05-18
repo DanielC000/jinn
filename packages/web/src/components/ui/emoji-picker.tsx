@@ -1,4 +1,3 @@
-"use client"
 
 import { useState, useMemo, useRef, useEffect } from "react"
 import { EMOJI_POOL } from "@/lib/emoji-pool"

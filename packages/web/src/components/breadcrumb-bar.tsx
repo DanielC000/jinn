@@ -1,6 +1,5 @@
-"use client"
 
-import Link from 'next/link'
+import { Link } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { useBreadcrumbs } from '@/context/breadcrumb-context'
 
@@ -29,7 +28,7 @@ export function BreadcrumbBar() {
                 {item.label}
               </span>
             ) : (
-              <Link href={item.href} className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors">
+              <Link to={item.href} className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors">
                 {item.label}
               </Link>
             )}

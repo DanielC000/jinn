@@ -1,4 +1,3 @@
-"use client"
 
 import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
@@ -1166,7 +1165,7 @@ export function ChatSidebar({
         </DialogContent>
       </Dialog>
 
-      <style jsx>{`
+      <style>{`
         @keyframes sidebar-pulse {
           0%,
           100% {

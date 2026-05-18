@@ -1,4 +1,3 @@
-"use client"
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { api } from '@/lib/api'
 import type { MediaAttachment } from '@/lib/conversations'

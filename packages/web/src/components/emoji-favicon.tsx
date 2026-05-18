@@ -1,4 +1,3 @@
-"use client"
 
 import { useEffect } from "react"
 import { useSettings } from "@/app/settings-provider"

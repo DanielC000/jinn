@@ -1,4 +1,3 @@
-"use client"
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Message, MediaAttachment } from '@/lib/conversations'
 import { parseMedia } from '@/lib/conversations'

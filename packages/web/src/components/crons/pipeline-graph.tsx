@@ -1,4 +1,3 @@
-"use client"
 
 import { describeCron } from "@/lib/cron-utils"
 

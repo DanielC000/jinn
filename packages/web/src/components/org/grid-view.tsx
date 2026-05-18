@@ -1,4 +1,3 @@
-"use client"
 
 import type { Employee } from "@/lib/api"
 import { Card, CardContent } from "@/components/ui/card"

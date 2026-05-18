@@ -1,7 +1,5 @@
-"use client"
 
-import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { Link, useLocation } from "react-router-dom"
 import { useState, useEffect } from "react"
 import {
   Sun,
@@ -36,7 +34,7 @@ function ThemeIcon({ theme }: { theme: ThemeId }) {
 // ---------------------------------------------------------------------------
 
 export function Sidebar() {
-  const pathname = usePathname()
+  const pathname = useLocation().pathname
   const { theme, setTheme } = useTheme()
   const { settings } = useSettings()
   const [hovered, setHovered] = useState(false)
@@ -84,9 +82,9 @@ export function Sidebar() {
           const Icon = item.icon
 
           return (
-            <a
+            <Link
               key={item.href}
-              href={item.href}
+              to={item.href}
               className={cn(
                 "group flex h-10 items-center gap-2.5 rounded-md px-3 text-[13px] whitespace-nowrap transition-colors",
                 isActive
@@ -100,7 +98,7 @@ export function Sidebar() {
               <span className={cn("transition-opacity duration-200", hovered ? "opacity-100" : "opacity-0")}>
                 {item.label}
               </span>
-            </a>
+            </Link>
           )
         })}
       </nav>

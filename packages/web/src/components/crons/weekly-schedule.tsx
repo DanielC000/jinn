@@ -1,4 +1,3 @@
-"use client"
 
 import { useMemo, useState, useRef, useEffect, useCallback } from "react"
 import { parseScheduleSlots, describeCron } from "@/lib/cron-utils"

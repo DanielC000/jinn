@@ -1,4 +1,3 @@
-"use client";
 
 import { useState, useRef, useEffect } from "react";
 import { Bell, CheckCircle, XCircle, AlertTriangle, Info, Check, Trash2 } from "lucide-react";

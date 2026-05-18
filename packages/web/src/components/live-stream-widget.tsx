@@ -1,4 +1,3 @@
-"use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Copy, Minimize2, X } from "lucide-react"

@@ -1,4 +1,3 @@
-"use client"
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import type { Employee } from '@/lib/api'

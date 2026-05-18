@@ -1,4 +1,3 @@
-"use client"
 import { Handle, Position, type NodeProps } from "@xyflow/react"
 import type { Employee } from "@/lib/api"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"

@@ -1,8 +1,7 @@
-"use client";
 
 import { useEffect, useState } from "react";
 import type { GatewayEvent } from "@/hooks/use-gateway";
-import Link from "next/link";
+import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useGateway } from "@/hooks/use-gateway";
 import { useSettings } from "@/app/settings-provider";
@@ -269,7 +268,7 @@ export default function DashboardPage() {
               return (
                 <Link
                   key={link.href}
-                  href={link.href}
+                  to={link.href}
                   className="no-underline"
                 >
                   <Card className="py-4 h-full cursor-pointer transition-colors hover:border-[var(--accent)]">
