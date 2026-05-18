@@ -294,6 +294,21 @@ function serverError(res: ServerResponse, message: string): void {
 
 const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken"]);
 
+/**
+ * Replace any secret-bearing string fields in a connector-shaped object with
+ * the "***" sentinel. Used by GET /api/config to sanitize per-connector
+ * config blocks and individual instance entries before sending to the UI.
+ * deepMerge round-trips the sentinel back to the original value on PUT.
+ */
+function sanitizeConnectorObj<T extends Record<string, unknown>>(obj: T): T {
+  const out: Record<string, unknown> = { ...obj };
+  for (const key of SANITIZED_KEYS) {
+    if (out[key]) out[key] = "***";
+    else out[key] = undefined;
+  }
+  return out as T;
+}
+
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target };
   for (const key of Object.keys(source)) {
@@ -1124,21 +1139,11 @@ export async function handleApiRequest(
       const sanitizedConnectors: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(rawConnectors)) {
         if (k === "instances" && Array.isArray(v)) {
-          sanitizedConnectors.instances = v.map((inst: any) => ({
-            ...inst,
-            token: inst?.token ? "***" : undefined,
-            signingSecret: inst?.signingSecret ? "***" : undefined,
-            botToken: inst?.botToken ? "***" : undefined,
-            appToken: inst?.appToken ? "***" : undefined,
-          }));
+          sanitizedConnectors.instances = v.map((inst: any) =>
+            inst && typeof inst === "object" ? sanitizeConnectorObj(inst) : inst,
+          );
         } else if (v && typeof v === "object") {
-          sanitizedConnectors[k] = {
-            ...v,
-            token: (v as any)?.token ? "***" : undefined,
-            signingSecret: (v as any)?.signingSecret ? "***" : undefined,
-            botToken: (v as any)?.botToken ? "***" : undefined,
-            appToken: (v as any)?.appToken ? "***" : undefined,
-          };
+          sanitizedConnectors[k] = sanitizeConnectorObj(v as Record<string, unknown>);
         } else {
           sanitizedConnectors[k] = v;
         }
