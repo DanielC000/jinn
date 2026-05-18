@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { GatewayEvent } from "@/hooks/use-gateway";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { useGateway } from "@/hooks/use-gateway";
@@ -90,8 +91,13 @@ export default function DashboardPage() {
   const [status, setStatus] = useState<StatusData | null>(null);
   const [cronCount, setCronCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [initialActivity, setInitialActivity] = useState<Array<{ event: string; payload: unknown }>>([]);
-  const { events, connected } = useGateway();
+  const [initialActivity, setInitialActivity] = useState<GatewayEvent[]>([]);
+  // Live events accumulated locally from the gateway subscribe() stream.
+  // We keep them here (instead of pulling `events` from useGateway) so the
+  // dashboard re-renders only when we actually receive an event — not on
+  // every WS frame seen by the whole app.
+  const [liveEvents, setLiveEvents] = useState<GatewayEvent[]>([]);
+  const { connected, subscribe } = useGateway();
 
   useEffect(() => {
     // Onboarding is owned by <OnboardingWizard /> (mounted in PageLayout).
@@ -116,12 +122,20 @@ export default function DashboardPage() {
       .catch(() => {});
   }, []);
 
+  // Subscribe to live gateway events directly. We keep at most 100 entries
+  // (matches what GatewayProvider used to keep in its `events` array).
+  useEffect(() => {
+    return subscribe((event, payload) => {
+      setLiveEvents((prev) => [...prev.slice(-99), { event, payload }]);
+    });
+  }, [subscribe]);
+
   const defaultEngine = status?.engines
     ? Object.keys(status.engines as Record<string, unknown>)[0] ?? "--"
     : "--";
 
   // Merge live WebSocket events with initial activity from API
-  const allEvents = events.length > 0 ? events : initialActivity;
+  const allEvents = liveEvents.length > 0 ? liveEvents : initialActivity;
   const recentEvents = [...allEvents].reverse().slice(0, 20);
 
   return (
