@@ -889,6 +889,15 @@ export async function startGateway(
       }
     }
 
+    // Dispose the hook registry so its periodic sweep timer is cleared. The
+    // timer is .unref()'d so the process exits anyway in production, but
+    // in-process shutdown (tests, future hot-reload) requires explicit cleanup.
+    try {
+      hookRegistry.dispose();
+    } catch (err) {
+      logger.warn(`Failed to dispose hook registry: ${err instanceof Error ? err.message : err}`);
+    }
+
     // Remove the gateway connection info file.
     try {
       fs.rmSync(GATEWAY_INFO_FILE, { force: true });
