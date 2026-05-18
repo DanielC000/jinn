@@ -334,6 +334,10 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     chunks: Buffer[];
     totalBytes: number;
     subscribers: Set<{ data: (d: Buffer) => void; control?: (e: PtyControlEvent) => void }>;
+    /** Set to true the first time a PTY is wired to this stream entry. Subsequent
+     *  wires (subscribers attached or not) are PTY respawns — clients need a reset
+     *  so their xterm doesn't render the new alt-screen atop the old one's cells. */
+    hasSeenPty: boolean;
   }>();
 
   constructor(
@@ -439,12 +443,14 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       kill: (signal?: string) => { try { proc.kill(signal); } catch { /* already gone */ } },
     } as PtyHandle;
     const stream = this.streamFor(jinnSessionId);
-    // If a previous PTY for this session left subscribers attached (WS outlived
-    // the old proc), tell them to reset their xterm before we start streaming
-    // the new PTY's output — otherwise the new alt-screen draws on top of the
-    // old one's leftover cells.
-    const isRespawn = this.streams.get(jinnSessionId) === stream && stream.subscribers.size > 0;
-    if (isRespawn) {
+    // Distinguish initial spawn from respawn via a per-stream flag rather than
+    // subscriber count — CliTerminal opens its WS on mount (before the user
+    // sends the first message that triggers spawn), so subscriber-count gating
+    // would spuriously reset on the very first PTY for the session.
+    // On respawn, only emit if there are subscribers (no one listens otherwise).
+    if (!stream.hasSeenPty) {
+      stream.hasSeenPty = true;
+    } else if (stream.subscribers.size > 0) {
       for (const sub of stream.subscribers) {
         try { sub.control?.({ type: "reset" }); } catch { /* ignore */ }
       }
@@ -572,10 +578,11 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     chunks: Buffer[];
     totalBytes: number;
     subscribers: Set<{ data: (d: Buffer) => void; control?: (e: PtyControlEvent) => void }>;
+    hasSeenPty: boolean;
   } {
     let stream = this.streams.get(sessionId);
     if (!stream) {
-      stream = { chunks: [], totalBytes: 0, subscribers: new Set() };
+      stream = { chunks: [], totalBytes: 0, subscribers: new Set(), hasSeenPty: false };
       this.streams.set(sessionId, stream);
     }
     return stream;
