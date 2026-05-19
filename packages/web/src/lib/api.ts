@@ -114,11 +114,15 @@ export const api = {
   getSessions: () => get<Record<string, unknown>[]>("/api/sessions"),
   getSession: (id: string) => get<Record<string, unknown>>(`/api/sessions/${id}`),
   getSessionChildren: (id: string) => get<Record<string, unknown>[]>(`/api/sessions/${id}/children`),
-  updateSession: (id: string, data: { title?: string }) =>
+  updateSession: (id: string, data: { title?: string; autoSplitDisabled?: boolean }) =>
     put<Record<string, unknown>>(`/api/sessions/${id}`, data),
   deleteSession: (id: string) => del<Record<string, unknown>>(`/api/sessions/${id}`),
   duplicateSession: (id: string) =>
     post<Record<string, unknown>>(`/api/sessions/${id}/duplicate`, {}),
+  archiveSession: (id: string, data?: { summary?: string; summarizerModel?: string }) =>
+    post<Record<string, unknown>>(`/api/sessions/${id}/archive`, data ?? {}),
+  setAutoSplitDisabled: (id: string, disabled: boolean) =>
+    put<Record<string, unknown>>(`/api/sessions/${id}`, { autoSplitDisabled: disabled }),
   bulkDeleteSessions: (ids: string[]) =>
     post<{ status: string; count: number }>("/api/sessions/bulk-delete", { ids }),
   createSession: (data: Record<string, unknown>) =>

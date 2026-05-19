@@ -483,6 +483,65 @@ export function ChatPane({
     intermediateStartRef.current = -1
   }, [])
 
+  // Auto-split banner state
+  const [archiving, setArchiving] = useState(false)
+  const [archiveError, setArchiveError] = useState<string | null>(null)
+  const [autoSplitDismissed, setAutoSplitDismissed] = useState(false)
+
+  // Reset the dismiss flag whenever the session changes — a new session that
+  // crosses the threshold should re-show the banner.
+  useEffect(() => {
+    setAutoSplitDismissed(false)
+    setArchiveError(null)
+    setArchiving(false)
+  }, [sessionId])
+
+  const handleArchiveNow = useCallback(async () => {
+    if (!sessionId) return
+    setArchiving(true)
+    setArchiveError(null)
+    try {
+      const successor = (await api.archiveSession(sessionId)) as Record<string, unknown>
+      const newId = String(successor.id ?? '')
+      if (!newId) throw new Error('Archive returned no successor id')
+      onRefresh?.()
+      // onSessionCreated handles tab open + selection — reuse it so archived
+      // sessions show up as a new active chat the same way as a fresh new chat.
+      onSessionCreated?.(newId)
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : 'Archive failed')
+    } finally {
+      setArchiving(false)
+    }
+  }, [sessionId, onRefresh, onSessionCreated])
+
+  const handleDisableAutoSplit = useCallback(async () => {
+    if (!sessionId) return
+    try {
+      await api.setAutoSplitDisabled(sessionId, true)
+      // Optimistic: hide the banner immediately; the next /api/sessions refresh
+      // will reflect autoSplitDisabled=true and autoSplitDue=undefined anyway.
+      setAutoSplitDismissed(true)
+      setCurrentSession((prev) => prev ? { ...prev, autoSplitDisabled: true, autoSplitDue: false } : prev)
+      onRefresh?.()
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : 'Failed to disable auto-split for this chat')
+    }
+  }, [sessionId, onRefresh])
+
+  // Derive banner visibility from the loaded session.
+  const showAutoSplitBanner = !!(
+    sessionId
+      && currentSession
+      && currentSession.autoSplitDue === true
+      && currentSession.status !== 'archived'
+      && !currentSession.autoSplitDisabled
+      && !autoSplitDismissed
+  )
+  const messageCountForBanner = typeof currentSession?.messageCount === 'number'
+    ? currentSession.messageCount as number
+    : undefined
+
   // Drag & drop state
   const [dragOver, setDragOver] = useState(false)
   const [droppedFiles, setDroppedFiles] = useState<File[]>()
@@ -575,6 +634,51 @@ export function ChatPane({
           </div>
         </div>
       )}
+      {/* Auto-split banner — shown when the backend marks this session as
+          autoSplitDue. Renders above messages in both chat and CLI views so
+          a long-running coordination chat surfaces the offer to archive even
+          when the user is in CLI mode. */}
+      {showAutoSplitBanner && (
+        <div
+          className="border-b border-[var(--separator)] bg-[var(--material-thin)] px-4 py-2.5"
+          role="alert"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0 flex-1 text-sm text-foreground">
+              <span className="font-medium">
+                {messageCountForBanner !== undefined
+                  ? `This chat has ${messageCountForBanner} messages.`
+                  : 'This chat is long enough to auto-split.'}
+              </span>{' '}
+              <span className="text-muted-foreground">
+                Archive it and continue with a compact summary — keeps per-turn tokens flat.
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                onClick={handleArchiveNow}
+                disabled={archiving}
+                className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+              >
+                {archiving ? 'Archiving — summarizing…' : 'Archive now'}
+              </button>
+              <button
+                onClick={handleDisableAutoSplit}
+                disabled={archiving}
+                className="rounded-md border border-[var(--separator)] px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
+              >
+                Disable for this chat
+              </button>
+            </div>
+          </div>
+          {archiveError && (
+            <div className="mt-2 text-xs text-[var(--system-red)]">
+              {archiveError}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Employee picker for new chat (any view mode — the CLI terminal mounts after first message creates the session) */}
       {!sessionId && messages.length === 0 && (
         <div className="flex flex-1 items-center justify-center">

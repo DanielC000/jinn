@@ -375,8 +375,9 @@ function serializeSession(session: Session, context: ApiContext): Session {
   // the threshold — skip already-archived and opted-out ones to avoid the
   // COUNT(*) on every list call.
   let autoSplitDue: boolean | undefined;
+  let messageCount: number | undefined;
   if (session.status !== "archived" && !session.autoSplitDisabled) {
-    const messageCount = countMessages(session.id);
+    messageCount = countMessages(session.id);
     autoSplitDue = isAutoSplitDue({ session, messageCount, config: context.getConfig() });
   }
   return {
@@ -384,6 +385,7 @@ function serializeSession(session: Session, context: ApiContext): Session {
     queueDepth,
     transportState,
     ...(autoSplitDue !== undefined ? { autoSplitDue } : {}),
+    ...(messageCount !== undefined ? { messageCount } : {}),
   };
 }
 
@@ -499,6 +501,10 @@ export async function handleApiRequest(
         const trimmed = body.title.trim();
         if (!trimmed) return badRequest(res, "title must not be empty");
         updates.title = trimmed.slice(0, 200);
+      }
+      if (body.autoSplitDisabled !== undefined) {
+        if (typeof body.autoSplitDisabled !== "boolean") return badRequest(res, "autoSplitDisabled must be a boolean");
+        updates.autoSplitDisabled = body.autoSplitDisabled;
       }
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
       const updated = updateSession(params.id, updates);

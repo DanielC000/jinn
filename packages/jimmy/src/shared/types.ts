@@ -179,6 +179,13 @@ export interface Session {
    * "consider archiving this chat" banner. Not stored.
    */
   autoSplitDue?: boolean;
+  /**
+   * Computed: live message count for this session, surfaced alongside
+   * autoSplitDue so the auto-split banner can render "this chat has N messages"
+   * without a second round-trip. Only present when autoSplitDue was evaluated
+   * (i.e. for non-archived, non-disabled sessions). Not stored.
+   */
+  messageCount?: number;
 }
 
 export interface CronJob {
