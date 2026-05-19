@@ -32,6 +32,7 @@ import {
 import { forkEngineSession } from "../sessions/fork.js";
 import { archiveSession, isAutoSplitDue, withSummaryPrompt, AUTO_SPLIT_DEFAULTS } from "../sessions/archive.js";
 import { summarizeSession } from "../sessions/summarize.js";
+import { loadTranscriptMessages } from "../sessions/transcript.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -375,16 +376,23 @@ function serializeSession(session: Session, context: ApiContext): Session {
   // the threshold — skip already-archived and opted-out ones to avoid the
   // COUNT(*) on every list call.
   let autoSplitDue: boolean | undefined;
+  let autoSplitTrigger: "messages" | "bytes" | undefined;
+  let autoSplitTokensEstimate: number | undefined;
   let messageCount: number | undefined;
   if (session.status !== "archived" && !session.autoSplitDisabled) {
     messageCount = countMessages(session.id);
-    autoSplitDue = isAutoSplitDue({ session, messageCount, config: context.getConfig() });
+    const result = isAutoSplitDue({ session, messageCount, config: context.getConfig() });
+    autoSplitDue = result.due;
+    autoSplitTrigger = result.trigger;
+    autoSplitTokensEstimate = result.tokensEstimate;
   }
   return {
     ...session,
     queueDepth,
     transportState,
     ...(autoSplitDue !== undefined ? { autoSplitDue } : {}),
+    ...(autoSplitTrigger !== undefined ? { autoSplitTrigger } : {}),
+    ...(autoSplitTokensEstimate !== undefined ? { autoSplitTokensEstimate } : {}),
     ...(messageCount !== undefined ? { messageCount } : {}),
   };
 }
@@ -1819,51 +1827,6 @@ function scheduleTranscriptBackfill(sessionId: string, engineSessionId: string, 
       backfillInProgress.delete(sessionId);
     }
   });
-}
-
-function loadTranscriptMessages(engineSessionId: string): Array<{ role: string; content: string }> {
-  // Claude Code stores transcripts in ~/.claude/projects/<project-key>/<sessionId>.jsonl
-  const claudeProjectsDir = path.join(
-    process.env.HOME || process.env.USERPROFILE || "",
-    ".claude",
-    "projects",
-  );
-  if (!fs.existsSync(claudeProjectsDir)) return [];
-
-  // Search all project dirs for the transcript
-  const projectDirs = fs.readdirSync(claudeProjectsDir, { withFileTypes: true });
-  for (const dir of projectDirs) {
-    if (!dir.isDirectory()) continue;
-    const jsonlPath = path.join(claudeProjectsDir, dir.name, `${engineSessionId}.jsonl`);
-    if (!fs.existsSync(jsonlPath)) continue;
-
-    const messages: Array<{ role: string; content: string }> = [];
-    const lines = fs.readFileSync(jsonlPath, "utf-8").trim().split("\n").filter(Boolean);
-    for (const line of lines) {
-      try {
-        const obj = JSON.parse(line);
-        const type = obj.type;
-        if (type !== "user" && type !== "assistant") continue;
-        const msg = obj.message;
-        if (!msg) continue;
-
-        let content = msg.content;
-        if (Array.isArray(content)) {
-          content = content
-            .filter((b: Record<string, unknown>) => b.type === "text")
-            .map((b: Record<string, unknown>) => b.text)
-            .join("");
-        }
-        if (typeof content === "string" && content.trim()) {
-          messages.push({ role: type, content: content.trim() });
-        }
-      } catch {
-        continue;
-      }
-    }
-    return messages;
-  }
-  return [];
 }
 
 async function runWebSession(
