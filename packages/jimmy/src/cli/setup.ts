@@ -501,7 +501,7 @@ export async function runSetup(opts?: { force?: boolean }): Promise<void> {
   }
 
   // Pre-cache skills CLI for instant searches later
-  spawn('npx', ['skills', '--version'], { stdio: 'ignore', detached: true }).unref();
+  spawn('npx', ['skills', '--version'], { stdio: 'ignore', detached: true, shell: true }).unref();
 
   // Detect project context and suggest relevant skills
   detectProjectContext(portalSlug);
