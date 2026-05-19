@@ -539,6 +539,16 @@ export function getMessages(sessionId: string): SessionMessage[] {
   return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
 }
 
+/**
+ * Cheap COUNT for the messages of a session — used by the auto-split trigger
+ * which is evaluated on every session API read.
+ */
+export function countMessages(sessionId: string): number {
+  const db = initDb();
+  const row = db.prepare('SELECT COUNT(*) AS n FROM messages WHERE session_id = ?').get(sessionId) as { n: number };
+  return row.n;
+}
+
 export interface QueueItem {
   id: string;
   sessionId: string;

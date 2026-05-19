@@ -19,6 +19,7 @@ import {
   updateSession,
 } from "./registry.js";
 import { buildContext, buildMinimalContext } from "./context.js";
+import { withSummaryPrompt } from "./archive.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
@@ -375,7 +376,7 @@ export class SessionManager {
       const result = await engine.run({
         prompt: promptToRun,
         resumeSessionId: session.engineSessionId ?? undefined,
-        systemPrompt,
+        systemPrompt: withSummaryPrompt(systemPrompt, session),
         cwd: JINN_HOME,
         bin: engineConfig.bin,
         model: session.model ?? engineConfig.model,

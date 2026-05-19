@@ -12,6 +12,7 @@ import {
   listSessions,
   getSession,
   accumulateSessionCost,
+  countMessages,
   createSession,
   updateSession,
   UpdateSessionFields,
@@ -29,6 +30,8 @@ import {
   initDb,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
+import { archiveSession, isAutoSplitDue, withSummaryPrompt, AUTO_SPLIT_DEFAULTS } from "../sessions/archive.js";
+import { summarizeSession } from "../sessions/summarize.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -368,10 +371,19 @@ function serializeSession(session: Session, context: ApiContext): Session {
   const queue = context.sessionManager.getQueue();
   const queueDepth = queue.getPendingCount(session.sessionKey || session.sourceRef);
   const transportState = queue.getTransportState(session.sessionKey || session.sourceRef, session.status);
+  // Auto-split due check: only compute for sessions that could plausibly hit
+  // the threshold — skip already-archived and opted-out ones to avoid the
+  // COUNT(*) on every list call.
+  let autoSplitDue: boolean | undefined;
+  if (session.status !== "archived" && !session.autoSplitDisabled) {
+    const messageCount = countMessages(session.id);
+    autoSplitDue = isAutoSplitDue({ session, messageCount, config: context.getConfig() });
+  }
   return {
     ...session,
     queueDepth,
     transportState,
+    ...(autoSplitDue !== undefined ? { autoSplitDue } : {}),
   };
 }
 
@@ -591,6 +603,80 @@ export async function handleApiRequest(
         logger.error(`Failed to duplicate session ${params.id}: ${err.message}`);
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: `Duplicate failed: ${err.message}` }));
+        return;
+      }
+    }
+
+    // POST /api/sessions/:id/archive — auto-split mega-chats workflow.
+    // Body (all optional):
+    //   { summary?: string,         // skip summarizer if provided (manual archive)
+    //     summarizerModel?: string  // override default (sonnet)
+    //   }
+    // Returns the new successor session (serialized).
+    params = matchRoute("/api/sessions/:id/archive", pathname);
+    if (method === "POST" && params) {
+      const source = getSession(params.id);
+      if (!source) return notFound(res);
+      if (source.status === "archived") {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Session is already archived", archivedTo: source.archivedTo }));
+        return;
+      }
+      if (source.autoSplitDisabled) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Auto-split is disabled for this session" }));
+        return;
+      }
+
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = (_parsed.body as any) ?? {};
+
+      try {
+        let summary: string;
+        if (typeof body.summary === "string" && body.summary.trim()) {
+          summary = body.summary.trim();
+          logger.info(`Archive: using caller-supplied summary for session ${source.id} (${summary.length} chars)`);
+        } else {
+          if (!source.engineSessionId) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Session has no engine_session_id — cannot auto-summarize; supply { summary } in the request body" }));
+            return;
+          }
+          const config = context.getConfig();
+          const summarizerModel = (typeof body.summarizerModel === "string" && body.summarizerModel)
+            || config.sessions?.autoSplit?.summarizerModel
+            || AUTO_SPLIT_DEFAULTS.summarizerModel;
+          const engineConfig = source.engine === "codex"
+            ? config.engines.codex
+            : source.engine === "gemini"
+              ? config.engines.gemini ?? config.engines.claude
+              : config.engines.claude;
+          const engine = context.sessionManager.getEngine(source.engine);
+          if (!engine) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: `No engine registered for "${source.engine}"` }));
+            return;
+          }
+          summary = await summarizeSession({
+            session: source,
+            engine,
+            bin: engineConfig.bin,
+            cwd: JINN_HOME,
+            model: summarizerModel,
+          });
+        }
+
+        const { newSession, reparentedChildren } = archiveSession(source.id, summary);
+        logger.info(`Archive endpoint: ${source.id} → ${newSession.id} (${reparentedChildren} children re-parented)`);
+        context.emit("session:archived", { sessionId: source.id, successorId: newSession.id, reparentedChildren });
+        context.emit("session:created", { sessionId: newSession.id });
+        return json(res, serializeSession(newSession, context));
+      } catch (err: any) {
+        logger.error(`Archive failed for ${source.id}: ${err.message}`);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Archive failed: ${err.message}` }));
         return;
       }
     }
@@ -1868,7 +1954,7 @@ async function runWebSession(
     const result = await engine.run({
       prompt: promptToRun,
       resumeSessionId: currentSession.engineSessionId ?? undefined,
-      systemPrompt,
+      systemPrompt: withSummaryPrompt(systemPrompt, currentSession),
       cwd: JINN_HOME,
       bin: engineConfig.bin,
       model: resolvedModel ?? engineConfig.model,

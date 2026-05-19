@@ -19,9 +19,44 @@
  * can still read the original conversation.
  */
 import { v4 as uuidv4 } from "uuid";
-import type { Session } from "../shared/types.js";
+import type { JinnConfig, Session } from "../shared/types.js";
 import { initDb, getSession } from "./registry.js";
 import { logger } from "../shared/logger.js";
+
+/** Defaults that match the design doc; overridable via config.sessions.autoSplit. */
+export const AUTO_SPLIT_DEFAULTS = {
+  enabled: true,
+  triggerMessages: 100,
+  triggerTokensEstimate: 80_000,
+  mode: "prompt" as const,
+  summarizerModel: "sonnet" as const,
+};
+
+/**
+ * Decide whether a session should surface as "auto-split due" right now.
+ *
+ * Returns true when ALL of the following hold:
+ *   - Auto-split is enabled in config (and not mode=disabled)
+ *   - The session is not already archived
+ *   - The per-session opt-out flag is false
+ *   - Message count >= triggerMessages
+ *
+ * (Token-estimate-based triggering is wired into the config but not yet
+ * evaluated — it requires reading the Claude transcript jsonl which we'd
+ * rather not do per API call. Phase 2 can plumb a running counter.)
+ */
+export function isAutoSplitDue(opts: {
+  session: Session;
+  messageCount: number;
+  config?: JinnConfig;
+}): boolean {
+  const { session, messageCount, config } = opts;
+  const cfg = { ...AUTO_SPLIT_DEFAULTS, ...(config?.sessions?.autoSplit ?? {}) };
+  if (!cfg.enabled || cfg.mode === "disabled") return false;
+  if (session.status === "archived") return false;
+  if (session.autoSplitDisabled) return false;
+  return messageCount >= cfg.triggerMessages;
+}
 
 export interface ArchiveResult {
   /** The newly-created successor session (the one the user continues in). */
@@ -136,6 +171,20 @@ export function archiveSession(oldId: string, summary: string): ArchiveResult {
  */
 export function isArchivedTip(session: Session): boolean {
   return session.archivedAt != null;
+}
+
+/**
+ * Append the session's `summary_prompt` (if any) to the engine systemPrompt
+ * under a clearly-marked section. Use this at every engine.run() callsite
+ * so successor sessions automatically carry their archived predecessor's
+ * compact summary on every turn.
+ *
+ * If the session has no summary_prompt (i.e. it's an original, not a
+ * successor), returns the systemPrompt unchanged.
+ */
+export function withSummaryPrompt(systemPrompt: string, session: Session): string {
+  if (!session.summaryPrompt) return systemPrompt;
+  return `${systemPrompt}\n\n---\n\n${session.summaryPrompt}`;
 }
 
 /**
