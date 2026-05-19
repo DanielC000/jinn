@@ -18,6 +18,8 @@
  * archived_to so the dashboard can group it under the new chat and the user
  * can still read the original conversation.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import type { JinnConfig, Session } from "../shared/types.js";
 import { initDb, getSession } from "./registry.js";
@@ -33,17 +35,60 @@ export const AUTO_SPLIT_DEFAULTS = {
 };
 
 /**
+ * Locate and stat the Claude transcript jsonl for a session, returning its
+ * byte count. The transcript is at `~/.claude/projects/<cwd-key>/<engineSessionId>.jsonl`,
+ * but rather than recompute the cwd-key transform (which differs between
+ * Claude's internal hashing and the cwd we'd know about), we walk
+ * `~/.claude/projects/` and look for any directory containing the file.
+ * Same approach as loadTranscriptMessages in the gateway, just statSync
+ * instead of readFileSync.
+ *
+ * Returns 0 when:
+ *   - the session has no engineSessionId yet (brand-new session)
+ *   - the engine isn't Claude (we don't know where codex/gemini stash transcripts)
+ *   - the file simply isn't there (e.g. running on a fresh machine)
+ *
+ * Cheap: one readdirSync of ~/.claude/projects (small set), then up to P
+ * existsSync calls. If this turns out to be a hotspot the cwd-key could be
+ * cached per session.
+ */
+export function getTranscriptByteEstimate(session: Session): number {
+  if (!session.engineSessionId) return 0;
+  if (session.engine !== "claude") return 0;
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  if (!home) return 0;
+  const projectsDir = path.join(home, ".claude", "projects");
+  if (!fs.existsSync(projectsDir)) return 0;
+  let dirs: fs.Dirent[];
+  try {
+    dirs = fs.readdirSync(projectsDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    const jsonlPath = path.join(projectsDir, dir.name, `${session.engineSessionId}.jsonl`);
+    try {
+      const st = fs.statSync(jsonlPath);
+      if (st.isFile()) return st.size;
+    } catch {
+      // file not in this dir — keep looking
+    }
+  }
+  return 0;
+}
+
+/**
  * Decide whether a session should surface as "auto-split due" right now.
  *
  * Returns true when ALL of the following hold:
  *   - Auto-split is enabled in config (and not mode=disabled)
  *   - The session is not already archived
  *   - The per-session opt-out flag is false
- *   - Message count >= triggerMessages
- *
- * (Token-estimate-based triggering is wired into the config but not yet
- * evaluated — it requires reading the Claude transcript jsonl which we'd
- * rather not do per API call. Phase 2 can plumb a running counter.)
+ *   - Either message count >= triggerMessages, or the transcript jsonl is
+ *     large enough that (byteSize / 4) >= triggerTokensEstimate. The /4 is
+ *     the same chars→tokens estimate used by the rest of the codebase
+ *     (sessions/context.ts also assumes ~4 chars per token).
  */
 export function isAutoSplitDue(opts: {
   session: Session;
@@ -55,7 +100,12 @@ export function isAutoSplitDue(opts: {
   if (!cfg.enabled || cfg.mode === "disabled") return false;
   if (session.status === "archived") return false;
   if (session.autoSplitDisabled) return false;
-  return messageCount >= cfg.triggerMessages;
+  if (messageCount >= cfg.triggerMessages) return true;
+  // Byte-based trigger: only pay the disk hit if the message-count check
+  // didn't already fire — the message-count threshold is the more common path.
+  const bytes = getTranscriptByteEstimate(session);
+  if (bytes > 0 && bytes / 4 >= cfg.triggerTokensEstimate) return true;
+  return false;
 }
 
 export interface ArchiveResult {

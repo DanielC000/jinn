@@ -1,6 +1,11 @@
-import { describe, test, expect } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, test, expect } from "vitest";
 import Database from "better-sqlite3";
 import { migrateSessionsSchema } from "../registry.js";
+import { getTranscriptByteEstimate, isAutoSplitDue } from "../archive.js";
+import type { Session } from "../../shared/types.js";
 
 /**
  * Smoke tests for the auto-split archive workflow. These exercise the
@@ -95,5 +100,144 @@ describe("auto-split archive", () => {
     expect(errorChild.parent_session_id).toBe(oldId);
     const archivedChild = db.prepare(`SELECT parent_session_id FROM sessions WHERE id=?`).get("child-archived") as { parent_session_id: string };
     expect(archivedChild.parent_session_id).toBe(oldId);
+  });
+});
+
+function fakeSession(overrides: Partial<Session> = {}): Session {
+  return {
+    id: "s1",
+    engine: "claude",
+    engineSessionId: null,
+    source: "web",
+    sourceRef: "web:s1",
+    connector: null,
+    sessionKey: "web:s1",
+    replyContext: null,
+    messageId: null,
+    transportMeta: null,
+    employee: null,
+    model: null,
+    title: null,
+    parentSessionId: null,
+    status: "idle",
+    effortLevel: null,
+    totalCost: 0,
+    totalTurns: 0,
+    createdAt: new Date().toISOString(),
+    lastActivity: new Date().toISOString(),
+    lastError: null,
+    archivedAt: null,
+    archivedTo: null,
+    archivedFrom: null,
+    summaryPrompt: null,
+    autoSplitDisabled: false,
+    ...overrides,
+  };
+}
+
+describe("isAutoSplitDue", () => {
+  test("returns true when messageCount crosses triggerMessages", () => {
+    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 100 })).toBe(true);
+    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 99 })).toBe(false);
+  });
+
+  test("returns false when session is archived", () => {
+    expect(isAutoSplitDue({ session: fakeSession({ status: "archived" }), messageCount: 500 })).toBe(false);
+  });
+
+  test("returns false when autoSplitDisabled", () => {
+    expect(isAutoSplitDue({ session: fakeSession({ autoSplitDisabled: true }), messageCount: 500 })).toBe(false);
+  });
+
+  test("returns false when feature disabled in config", () => {
+    expect(
+      isAutoSplitDue({
+        session: fakeSession(),
+        messageCount: 500,
+        config: { sessions: { autoSplit: { enabled: false } } } as any,
+      }),
+    ).toBe(false);
+  });
+
+  test("returns false when mode is 'disabled'", () => {
+    expect(
+      isAutoSplitDue({
+        session: fakeSession(),
+        messageCount: 500,
+        config: { sessions: { autoSplit: { mode: "disabled" } } } as any,
+      }),
+    ).toBe(false);
+  });
+
+  test("respects custom triggerMessages from config", () => {
+    expect(
+      isAutoSplitDue({
+        session: fakeSession(),
+        messageCount: 75,
+        config: { sessions: { autoSplit: { triggerMessages: 75 } } } as any,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("getTranscriptByteEstimate", () => {
+  let tmpHome: string;
+  let originalHome: string | undefined;
+  let originalUserprofile: string | undefined;
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "jinn-archive-test-"));
+    originalHome = process.env.HOME;
+    originalUserprofile = process.env.USERPROFILE;
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+    if (originalUserprofile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = originalUserprofile;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  test("returns 0 when no engineSessionId", () => {
+    expect(getTranscriptByteEstimate(fakeSession())).toBe(0);
+  });
+
+  test("returns 0 for non-claude engines", () => {
+    expect(getTranscriptByteEstimate(fakeSession({ engine: "codex", engineSessionId: "x" }))).toBe(0);
+  });
+
+  test("returns 0 when projects dir doesn't exist", () => {
+    expect(getTranscriptByteEstimate(fakeSession({ engineSessionId: "missing" }))).toBe(0);
+  });
+
+  test("finds the jsonl across project dirs and returns its byte size", () => {
+    const engineSessionId = "abc-123";
+    const projectDir = path.join(tmpHome, ".claude", "projects", "-some-cwd-key");
+    fs.mkdirSync(projectDir, { recursive: true });
+    const jsonl = path.join(projectDir, `${engineSessionId}.jsonl`);
+    const payload = "x".repeat(40_000);
+    fs.writeFileSync(jsonl, payload);
+    expect(getTranscriptByteEstimate(fakeSession({ engineSessionId }))).toBe(40_000);
+  });
+
+  test("byte-based trigger fires through isAutoSplitDue at the configured threshold", () => {
+    const engineSessionId = "byte-trig";
+    const projectDir = path.join(tmpHome, ".claude", "projects", "-some-cwd");
+    fs.mkdirSync(projectDir, { recursive: true });
+    // 400K bytes → ~100K-token estimate at chars/4, well past the 80K default.
+    fs.writeFileSync(path.join(projectDir, `${engineSessionId}.jsonl`), "x".repeat(400_000));
+    const session = fakeSession({ engineSessionId });
+    expect(isAutoSplitDue({ session, messageCount: 0 })).toBe(true);
+  });
+
+  test("byte-based trigger does NOT fire when below threshold", () => {
+    const engineSessionId = "byte-below";
+    const projectDir = path.join(tmpHome, ".claude", "projects", "-x");
+    fs.mkdirSync(projectDir, { recursive: true });
+    // 200K bytes → ~50K tokens, below the 80K default.
+    fs.writeFileSync(path.join(projectDir, `${engineSessionId}.jsonl`), "x".repeat(200_000));
+    const session = fakeSession({ engineSessionId });
+    expect(isAutoSplitDue({ session, messageCount: 0 })).toBe(false);
   });
 });
