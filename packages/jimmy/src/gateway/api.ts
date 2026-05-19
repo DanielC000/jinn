@@ -11,6 +11,7 @@ import { buildContext } from "../sessions/context.js";
 import {
   listSessions,
   getSession,
+  accumulateSessionCost,
   createSession,
   updateSession,
   UpdateSessionFields,
@@ -1829,6 +1830,11 @@ async function runWebSession(
         ? config.engines.gemini ?? config.engines.claude
         : config.engines.claude;
     const effortLevel = resolveEffort(engineConfig, currentSession, employee);
+    // Resolve the model up front so we can both pass it to the engine and
+    // persist it back to the session row on first completion (web sessions
+    // are created with model=null when the client doesn't pin one).
+    const resolvedModel = currentSession.model ?? engineConfig.model ?? null;
+    const persistModel = currentSession.model == null && resolvedModel != null;
 
     let lastHeartbeatAt = 0;
     const runHeartbeat = setInterval(() => {
@@ -1865,7 +1871,7 @@ async function runWebSession(
       systemPrompt,
       cwd: JINN_HOME,
       bin: engineConfig.bin,
-      model: currentSession.model ?? engineConfig.model,
+      model: resolvedModel ?? engineConfig.model,
       effortLevel,
       cliFlags: employee?.cliFlags,
       attachments: attachments?.length ? attachments : undefined,
@@ -1976,10 +1982,19 @@ async function runWebSession(
 
             updateSession(currentSession.id, {
               ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
+              ...(persistModel ? { model: resolvedModel } : {}),
               status: retryResult.error ? "error" : "idle",
               lastActivity: new Date().toISOString(),
               lastError: retryResult.error ?? null,
             });
+
+            if (retryResult.cost || retryResult.numTurns) {
+              accumulateSessionCost(
+                currentSession.id,
+                retryResult.cost ?? 0,
+                retryResult.numTurns ?? 1,
+              );
+            }
 
             context.emit("session:completed", {
               sessionId: currentSession.id,
@@ -2017,10 +2032,20 @@ async function runWebSession(
 
     updateSession(currentSession.id, {
       ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
+      ...(persistModel ? { model: resolvedModel } : {}),
       status: result.error ? "error" : "idle",
       lastActivity: new Date().toISOString(),
       lastError: result.error ?? null,
     });
+
+    if (result.cost || result.numTurns) {
+      accumulateSessionCost(
+        currentSession.id,
+        result.cost ?? 0,
+        result.numTurns ?? 1,
+      );
+    }
+
     if (syncRequested && !rateLimit.limited && !wasInterrupted) {
       const meta = (getSession(currentSession.id)?.transportMeta || currentSession.transportMeta || {}) as Record<string, unknown>;
       if (meta && typeof meta === "object" && !Array.isArray(meta)) {
