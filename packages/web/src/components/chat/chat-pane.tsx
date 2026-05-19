@@ -538,9 +538,29 @@ export function ChatPane({
       && !currentSession.autoSplitDisabled
       && !autoSplitDismissed
   )
+  const autoSplitTrigger = currentSession?.autoSplitTrigger as 'messages' | 'bytes' | undefined
   const messageCountForBanner = typeof currentSession?.messageCount === 'number'
     ? currentSession.messageCount as number
     : undefined
+  const tokensEstimateForBanner = typeof currentSession?.autoSplitTokensEstimate === 'number'
+    ? currentSession.autoSplitTokensEstimate as number
+    : undefined
+  // Pick banner copy based on which threshold fired. Falls back to the
+  // generic line if the API didn't surface a trigger (e.g. older daemon
+  // build that pre-dates Phase 3).
+  const bannerHeadline = (() => {
+    if (autoSplitTrigger === 'bytes' && tokensEstimateForBanner !== undefined) {
+      const k = Math.round(tokensEstimateForBanner / 1000)
+      return `This chat's transcript is ~${k}K tokens.`
+    }
+    if (autoSplitTrigger === 'messages' && messageCountForBanner !== undefined) {
+      return `This chat has ${messageCountForBanner} messages.`
+    }
+    if (messageCountForBanner !== undefined) {
+      return `This chat has ${messageCountForBanner} messages.`
+    }
+    return 'This chat is long enough to auto-split.'
+  })()
 
   // Drag & drop state
   const [dragOver, setDragOver] = useState(false)
@@ -646,9 +666,7 @@ export function ChatPane({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0 flex-1 text-sm text-foreground">
               <span className="font-medium">
-                {messageCountForBanner !== undefined
-                  ? `This chat has ${messageCountForBanner} messages.`
-                  : 'This chat is long enough to auto-split.'}
+                {bannerHeadline}
               </span>{' '}
               <span className="text-muted-foreground">
                 Archive it and continue with a compact summary — keeps per-turn tokens flat.

@@ -79,9 +79,24 @@ export function getTranscriptByteEstimate(session: Session): number {
 }
 
 /**
+ * Result of checking whether a session is auto-split due.
+ *
+ * `trigger` identifies which threshold fired. The UI uses this to write
+ * accurate banner copy: a 2-message session that tripped on bytes shouldn't
+ * be shown as "This chat has 2 messages." (it tripped because the jsonl is
+ * 320KB+, not because of turn count).
+ */
+export interface AutoSplitDueResult {
+  due: boolean;
+  trigger?: "messages" | "bytes";
+  /** When the byte trigger fires, the rough token estimate (bytes/4) so the UI can render "~85K tokens". */
+  tokensEstimate?: number;
+}
+
+/**
  * Decide whether a session should surface as "auto-split due" right now.
  *
- * Returns true when ALL of the following hold:
+ * Returns `due: true` when ALL of the following hold:
  *   - Auto-split is enabled in config (and not mode=disabled)
  *   - The session is not already archived
  *   - The per-session opt-out flag is false
@@ -89,23 +104,28 @@ export function getTranscriptByteEstimate(session: Session): number {
  *     large enough that (byteSize / 4) >= triggerTokensEstimate. The /4 is
  *     the same chars→tokens estimate used by the rest of the codebase
  *     (sessions/context.ts also assumes ~4 chars per token).
+ *
+ * When `due: true`, `trigger` identifies which threshold fired. When the
+ * byte trigger fires, `tokensEstimate` carries the rough token count.
  */
 export function isAutoSplitDue(opts: {
   session: Session;
   messageCount: number;
   config?: JinnConfig;
-}): boolean {
+}): AutoSplitDueResult {
   const { session, messageCount, config } = opts;
   const cfg = { ...AUTO_SPLIT_DEFAULTS, ...(config?.sessions?.autoSplit ?? {}) };
-  if (!cfg.enabled || cfg.mode === "disabled") return false;
-  if (session.status === "archived") return false;
-  if (session.autoSplitDisabled) return false;
-  if (messageCount >= cfg.triggerMessages) return true;
+  if (!cfg.enabled || cfg.mode === "disabled") return { due: false };
+  if (session.status === "archived") return { due: false };
+  if (session.autoSplitDisabled) return { due: false };
+  if (messageCount >= cfg.triggerMessages) return { due: true, trigger: "messages" };
   // Byte-based trigger: only pay the disk hit if the message-count check
   // didn't already fire — the message-count threshold is the more common path.
   const bytes = getTranscriptByteEstimate(session);
-  if (bytes > 0 && bytes / 4 >= cfg.triggerTokensEstimate) return true;
-  return false;
+  if (bytes > 0 && bytes / 4 >= cfg.triggerTokensEstimate) {
+    return { due: true, trigger: "bytes", tokensEstimate: Math.round(bytes / 4) };
+  }
+  return { due: false };
 }
 
 export interface ArchiveResult {

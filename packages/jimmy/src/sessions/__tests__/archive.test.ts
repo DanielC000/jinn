@@ -136,37 +136,37 @@ function fakeSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe("isAutoSplitDue", () => {
-  test("returns true when messageCount crosses triggerMessages", () => {
-    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 100 })).toBe(true);
-    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 99 })).toBe(false);
+  test("messages trigger fires when messageCount crosses triggerMessages", () => {
+    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 100 })).toEqual({ due: true, trigger: "messages" });
+    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 99 })).toEqual({ due: false });
   });
 
-  test("returns false when session is archived", () => {
-    expect(isAutoSplitDue({ session: fakeSession({ status: "archived" }), messageCount: 500 })).toBe(false);
+  test("returns due:false when session is archived", () => {
+    expect(isAutoSplitDue({ session: fakeSession({ status: "archived" }), messageCount: 500 })).toEqual({ due: false });
   });
 
-  test("returns false when autoSplitDisabled", () => {
-    expect(isAutoSplitDue({ session: fakeSession({ autoSplitDisabled: true }), messageCount: 500 })).toBe(false);
+  test("returns due:false when autoSplitDisabled", () => {
+    expect(isAutoSplitDue({ session: fakeSession({ autoSplitDisabled: true }), messageCount: 500 })).toEqual({ due: false });
   });
 
-  test("returns false when feature disabled in config", () => {
+  test("returns due:false when feature disabled in config", () => {
     expect(
       isAutoSplitDue({
         session: fakeSession(),
         messageCount: 500,
         config: { sessions: { autoSplit: { enabled: false } } } as any,
       }),
-    ).toBe(false);
+    ).toEqual({ due: false });
   });
 
-  test("returns false when mode is 'disabled'", () => {
+  test("returns due:false when mode is 'disabled'", () => {
     expect(
       isAutoSplitDue({
         session: fakeSession(),
         messageCount: 500,
         config: { sessions: { autoSplit: { mode: "disabled" } } } as any,
       }),
-    ).toBe(false);
+    ).toEqual({ due: false });
   });
 
   test("respects custom triggerMessages from config", () => {
@@ -176,7 +176,7 @@ describe("isAutoSplitDue", () => {
         messageCount: 75,
         config: { sessions: { autoSplit: { triggerMessages: 75 } } } as any,
       }),
-    ).toBe(true);
+    ).toEqual({ due: true, trigger: "messages" });
   });
 });
 
@@ -221,14 +221,17 @@ describe("getTranscriptByteEstimate", () => {
     expect(getTranscriptByteEstimate(fakeSession({ engineSessionId }))).toBe(40_000);
   });
 
-  test("byte-based trigger fires through isAutoSplitDue at the configured threshold", () => {
+  test("byte-based trigger fires through isAutoSplitDue at the configured threshold with tokensEstimate", () => {
     const engineSessionId = "byte-trig";
     const projectDir = path.join(tmpHome, ".claude", "projects", "-some-cwd");
     fs.mkdirSync(projectDir, { recursive: true });
     // 400K bytes → ~100K-token estimate at chars/4, well past the 80K default.
     fs.writeFileSync(path.join(projectDir, `${engineSessionId}.jsonl`), "x".repeat(400_000));
     const session = fakeSession({ engineSessionId });
-    expect(isAutoSplitDue({ session, messageCount: 0 })).toBe(true);
+    const result = isAutoSplitDue({ session, messageCount: 0 });
+    expect(result.due).toBe(true);
+    expect(result.trigger).toBe("bytes");
+    expect(result.tokensEstimate).toBe(100_000);
   });
 
   test("byte-based trigger does NOT fire when below threshold", () => {
@@ -238,6 +241,18 @@ describe("getTranscriptByteEstimate", () => {
     // 200K bytes → ~50K tokens, below the 80K default.
     fs.writeFileSync(path.join(projectDir, `${engineSessionId}.jsonl`), "x".repeat(200_000));
     const session = fakeSession({ engineSessionId });
-    expect(isAutoSplitDue({ session, messageCount: 0 })).toBe(false);
+    expect(isAutoSplitDue({ session, messageCount: 0 })).toEqual({ due: false });
+  });
+
+  test("messages trigger wins over bytes trigger when both would fire", () => {
+    const engineSessionId = "both-trig";
+    const projectDir = path.join(tmpHome, ".claude", "projects", "-both");
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, `${engineSessionId}.jsonl`), "x".repeat(400_000));
+    const session = fakeSession({ engineSessionId });
+    // messageCount above triggerMessages should short-circuit to messages trigger
+    // (cheaper than the disk hit) — verify we don't accidentally upgrade to bytes.
+    const result = isAutoSplitDue({ session, messageCount: 150 });
+    expect(result).toEqual({ due: true, trigger: "messages" });
   });
 });

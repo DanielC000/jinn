@@ -180,6 +180,17 @@ export interface Session {
    */
   autoSplitDue?: boolean;
   /**
+   * Computed: which threshold fired when `autoSplitDue: true`. Lets the UI
+   * write accurate banner copy (e.g. "this chat has 228 messages" vs.
+   * "this chat's transcript is ~85K tokens"). Not stored.
+   */
+  autoSplitTrigger?: "messages" | "bytes";
+  /**
+   * Computed: rough token estimate (bytes/4) when the byte trigger fires.
+   * Only present when `autoSplitTrigger === "bytes"`. Not stored.
+   */
+  autoSplitTokensEstimate?: number;
+  /**
    * Computed: live message count for this session, surfaced alongside
    * autoSplitDue so the auto-split banner can render "this chat has N messages"
    * without a second round-trip. Only present when autoSplitDue was evaluated
