@@ -55,9 +55,9 @@ The daemon is the single process that owns all state. Key files:
 
 ### Sessions (`src/sessions/`)
 
-- `manager.ts` — Orchestrates engine dispatch: derives session key, looks up or creates session, enqueues if busy, calls engine, streams results back via `replyContext`
+- `manager.ts` — Orchestrates engine dispatch: derives session key, looks up or creates session, enqueues if busy, calls engine, streams results back via `replyContext`. Tracks a per-session `contextVersion` to select full vs. minimal context; `invalidateContextCache()` forces a full rebuild on the next turn (called by org/cron file watchers).
 - `registry.ts` — Synchronous SQLite wrapper (better-sqlite3). Tables: `sessions`, `messages`, `files`
-- `context.ts` — Builds system prompt for a session (employee persona + org hierarchy)
+- `context.ts` — Builds system prompt for a session. `buildContext()` does a full rebuild (org hierarchy, cron jobs, knowledge listing, env scan). `buildMinimalContext()` emits ESSENTIAL sections only (identity + session + config) with no filesystem I/O — used on resumed turns to keep the appended prompt small (~1–2 KB vs ~10–50 KB).
 - `queue.ts` — Per-session queue; default concurrency = 1 (sequential turns)
 - `fork.ts` — Spawns a child session when delegating to an employee
 - `callbacks.ts` — Notifies parent session or connector when a forked session completes
