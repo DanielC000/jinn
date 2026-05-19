@@ -43,11 +43,18 @@ Version lives in **one place**: `packages/jimmy/package.json`.
    pnpm typecheck && pnpm test
    ```
 
-5. **Publish to npm** (needs `npm whoami` to be the publisher):
+5. **Publish to npm.** A gitignored npm **automation token** lives at
+   **`packages/jimmy/.npmrc`** (`//registry.npmjs.org/:_authToken=...`). npm reads
+   it automatically when publishing from that directory, so it bypasses the
+   account's interactive login + 2FA OTP. Publish:
    ```bash
    cd packages/jimmy && npm publish && cd -
    ```
-   This is the irreversible step — confirm with the maintainer first.
+   - This is the irreversible step — confirm with the maintainer first.
+   - If publish fails with `E401`/`EOTP`, the token file is missing or revoked.
+     Recreate it at npmjs.com → Access Tokens → Classic → **Automation**, then
+     write `//registry.npmjs.org/:_authToken=<token>` to `packages/jimmy/.npmrc`
+     (it's already in `.gitignore` — never commit it).
 
 6. **Tag + push:**
    ```bash
