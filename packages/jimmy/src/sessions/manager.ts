@@ -18,7 +18,7 @@ import {
   insertMessage,
   updateSession,
 } from "./registry.js";
-import { buildContext } from "./context.js";
+import { buildContext, buildMinimalContext } from "./context.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
@@ -108,6 +108,13 @@ export class SessionManager {
   private connectorNames: string[];
   private queue = new SessionQueue();
   private connectorProvider: () => Map<string, Connector> = () => new Map();
+  private contextVersion = 0;
+  private sessionContextVersions = new Map<string, number>();
+
+  /** Bump the context version so the next turn for every session sends the full context. */
+  invalidateContextCache(): void {
+    this.contextVersion++;
+  }
 
   constructor(
     config: JinnConfig,
@@ -243,26 +250,54 @@ export class SessionManager {
     // Resolve MCP config before try block so it's accessible in catch for cleanup
     let mcpConfigPath: string | undefined;
 
+    // Determine whether we can skip the full (expensive) context rebuild.
+    // A resumed session with an up-to-date context version uses the minimal prompt
+    // (identity + session + config only), avoiding filesystem scans and cutting
+    // per-turn token cost significantly.
+    const syncSinceIso = (session.transportMeta as any)?.claudeSyncSince;
+    const lastContextVersion = this.sessionContextVersions.get(session.sessionKey) ?? -1;
+    const contextIsFresh = !!session.engineSessionId
+      && !syncSinceIso
+      && lastContextVersion >= this.contextVersion;
+
     let hierarchy: import("../shared/types.js").OrgHierarchy | undefined;
-    try {
-      const { scanOrg } = await import("../gateway/org.js");
-      const { resolveOrgHierarchy } = await import("../gateway/org-hierarchy.js");
-      hierarchy = resolveOrgHierarchy(scanOrg());
-    } catch { /* fallback to filesystem scan in context builder */ }
+    if (!contextIsFresh) {
+      try {
+        const { scanOrg } = await import("../gateway/org.js");
+        const { resolveOrgHierarchy } = await import("../gateway/org-hierarchy.js");
+        hierarchy = resolveOrgHierarchy(scanOrg());
+      } catch { /* fallback to filesystem scan in context builder */ }
+    }
 
     try {
-      const systemPrompt = buildContext({
-        source: session.source,
-        channel: msg.channel,
-        thread: msg.thread,
-        user: msg.user,
-        employee,
-        connectors: this.connectorNames,
-        config: this.config,
-        sessionId: session.id,
-        channelName: (msg.transportMeta?.channelName as string) || undefined,
-        hierarchy,
-      });
+      const channelName = (msg.transportMeta?.channelName as string) || undefined;
+      const systemPrompt = contextIsFresh
+        ? buildMinimalContext({
+            source: session.source,
+            channel: msg.channel,
+            thread: msg.thread,
+            user: msg.user,
+            employee,
+            config: this.config,
+            sessionId: session.id,
+            channelName,
+          })
+        : buildContext({
+            source: session.source,
+            channel: msg.channel,
+            thread: msg.thread,
+            user: msg.user,
+            employee,
+            connectors: this.connectorNames,
+            config: this.config,
+            sessionId: session.id,
+            channelName,
+            hierarchy,
+          });
+
+      if (!contextIsFresh) {
+        this.sessionContextVersions.set(session.sessionKey, this.contextVersion);
+      }
 
       const engineConfig = session.engine === "codex"
         ? this.config.engines.codex
@@ -280,7 +315,7 @@ export class SessionManager {
 
       // If we previously switched to GPT while Claude was rate-limited, inject a sync transcript
       // so Claude can resume with full context when it comes back online.
-      const syncSinceIso = (session.transportMeta as any)?.claudeSyncSince;
+      // (syncSinceIso already computed above — contextIsFresh is false in this branch)
       let promptToRun = msg.text;
       const syncSinceMs = typeof syncSinceIso === "string" ? new Date(syncSinceIso).getTime() : NaN;
       const syncRequested = session.engine === "claude" && typeof syncSinceIso === "string" && Number.isFinite(syncSinceMs);

@@ -790,11 +790,13 @@ export async function startGateway(
     onCronReload: () => {
       const updatedJobs = loadJobs();
       reloadScheduler(updatedJobs);
+      sessionManager.invalidateContextCache();
       logger.info(`Cron jobs reloaded (${updatedJobs.length} job(s))`);
       emit("cron:reloaded", {});
     },
     onOrgChange: () => {
       employeeRegistry = scanOrg();
+      sessionManager.invalidateContextCache();
       logger.info(`Org directory changed, reloaded ${employeeRegistry.size} employee(s)`);
       // Org/persona changed — drop warm PTYs so the next turn respawns with fresh --append-system-prompt.
       interactiveClaudeEngine.killAll();

@@ -206,6 +206,55 @@ export function buildContext(opts: {
   return trimContext(sections, maxChars);
 }
 
+/**
+ * Lightweight context for resumed sessions — ESSENTIAL sections only.
+ * No filesystem I/O. Used on turn 2+ when the full context is already
+ * loaded into the Claude session from the first turn.
+ */
+export function buildMinimalContext(opts: {
+  source: string;
+  channel: string;
+  thread?: string;
+  user: string;
+  employee?: Employee;
+  config?: JinnConfig;
+  sessionId?: string;
+  portalName?: string;
+  operatorName?: string;
+  language?: string;
+  channelName?: string;
+}): string {
+  const portalName = opts.portalName || opts.config?.portal?.portalName || "Jinn";
+  const operatorName = opts.operatorName || opts.config?.portal?.operatorName;
+  const language = opts.language || opts.config?.portal?.language || "English";
+  const gatewayUrl = opts.config
+    ? `http://${opts.config.gateway.host || "127.0.0.1"}:${opts.config.gateway.port || 7777}`
+    : "http://127.0.0.1:7777";
+
+  const parts: string[] = [];
+
+  if (opts.employee) {
+    parts.push(buildEmployeeIdentity(opts.employee, portalName, language));
+  } else {
+    parts.push(buildIdentity(portalName, operatorName, language));
+  }
+
+  parts.push(buildSessionContext({
+    source: opts.source,
+    channel: opts.channel,
+    thread: opts.thread,
+    user: opts.user,
+    sessionId: opts.sessionId,
+    channelName: opts.channelName,
+  }));
+
+  if (opts.config) {
+    parts.push(buildConfigContext(opts.config, gatewayUrl));
+  }
+
+  return parts.join("\n\n");
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Section builders
 // ═══════════════════════════════════════════════════════════════
