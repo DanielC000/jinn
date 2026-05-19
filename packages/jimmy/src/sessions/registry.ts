@@ -296,6 +296,12 @@ export interface UpdateSessionFields {
   lastActivity?: string;
   lastError?: string | null;
   title?: string;
+  // Auto-split mega-chats (Phase 1):
+  archivedAt?: string | null;
+  archivedTo?: string | null;
+  archivedFrom?: string | null;
+  summaryPrompt?: string | null;
+  autoSplitDisabled?: boolean;
 }
 
 export function updateSession(id: string, updates: UpdateSessionFields): Session | undefined {
@@ -342,6 +348,26 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.title !== undefined) {
     sets.push('title = ?');
     values.push(updates.title);
+  }
+  if (updates.archivedAt !== undefined) {
+    sets.push('archived_at = ?');
+    values.push(updates.archivedAt);
+  }
+  if (updates.archivedTo !== undefined) {
+    sets.push('archived_to = ?');
+    values.push(updates.archivedTo);
+  }
+  if (updates.archivedFrom !== undefined) {
+    sets.push('archived_from = ?');
+    values.push(updates.archivedFrom);
+  }
+  if (updates.summaryPrompt !== undefined) {
+    sets.push('summary_prompt = ?');
+    values.push(updates.summaryPrompt);
+  }
+  if (updates.autoSplitDisabled !== undefined) {
+    sets.push('auto_split_disabled = ?');
+    values.push(updates.autoSplitDisabled ? 1 : 0);
   }
 
   if (sets.length === 0) return getSession(id);
