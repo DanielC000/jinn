@@ -23,9 +23,11 @@ export class SessionQueue {
     return this.running.has(sessionKey) ? Math.max(0, total - 1) : total;
   }
 
-  getTransportState(sessionKey: string, status?: "idle" | "running" | "error" | "waiting" | "interrupted"): "idle" | "queued" | "running" | "error" | "interrupted" {
+  getTransportState(sessionKey: string, status?: "idle" | "running" | "error" | "waiting" | "interrupted" | "archived"): "idle" | "queued" | "running" | "error" | "interrupted" {
     if (status === "error") return "error";
     if (status === "interrupted") return "interrupted";
+    // Archived sessions have no live transport; surface them as idle.
+    if (status === "archived") return "idle";
     if (this.running.has(sessionKey)) return "running";
     if (this.getPendingCount(sessionKey) > 0) return "queued";
     return status === "running" ? "running" : "idle";

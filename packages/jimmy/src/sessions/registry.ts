@@ -95,6 +95,11 @@ function rowToSession(row: Record<string, unknown>): Session {
     createdAt: row.created_at as string,
     lastActivity: row.last_activity as string,
     lastError: (row.last_error as string) ?? null,
+    archivedAt: (row.archived_at as string) ?? null,
+    archivedTo: (row.archived_to as string) ?? null,
+    archivedFrom: (row.archived_from as string) ?? null,
+    summaryPrompt: (row.summary_prompt as string) ?? null,
+    autoSplitDisabled: ((row.auto_split_disabled as number) ?? 0) === 1,
   };
 }
 
@@ -142,6 +147,12 @@ export function migrateSessionsSchema(database: Database.Database): void {
     ['total_cost', 'REAL', '0'],
     ['total_turns', 'INTEGER', '0'],
     ['effort_level', 'TEXT'],
+    // Auto-split mega-chats (Phase 1):
+    ['archived_at', 'TEXT'],
+    ['archived_to', 'TEXT'],
+    ['archived_from', 'TEXT'],
+    ['summary_prompt', 'TEXT'],
+    ['auto_split_disabled', 'INTEGER', '0'],
   ];
 
   for (const [name, type, defaultVal] of missingColumns) {
@@ -250,6 +261,11 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     createdAt: now,
     lastActivity: now,
     lastError: null,
+    archivedAt: null,
+    archivedTo: null,
+    archivedFrom: null,
+    summaryPrompt: null,
+    autoSplitDisabled: false,
   };
 }
 

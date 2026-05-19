@@ -153,7 +153,7 @@ export interface Session {
   model: string | null;
   title: string | null;
   parentSessionId: string | null;
-  status: "idle" | "running" | "error" | "waiting" | "interrupted";
+  status: "idle" | "running" | "error" | "waiting" | "interrupted" | "archived";
   effortLevel: string | null;
   totalCost: number;
   totalTurns: number;
@@ -162,6 +162,17 @@ export interface Session {
   createdAt: string;
   lastActivity: string;
   lastError: string | null;
+  // Auto-split mega-chats (Phase 1):
+  /** ISO timestamp when this session was archived in favor of a successor; null when active. */
+  archivedAt: string | null;
+  /** Session id of the successor (the new chat that took over after archive). */
+  archivedTo: string | null;
+  /** Session id this session was spawned from via auto-split; null when this is an original. */
+  archivedFrom: string | null;
+  /** When set, injected via --append-system-prompt on every turn so the model has prior context without rehydrating the full transcript. */
+  summaryPrompt: string | null;
+  /** When true, auto-split logic skips this session even if it crosses thresholds. */
+  autoSplitDisabled: boolean;
 }
 
 export interface CronJob {
