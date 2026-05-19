@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { ChevronDown, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
+import { Archive, ArrowRight, ChevronDown, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
 import { api, type Employee } from "@/lib/api"
 import { useOrg } from "@/hooks/use-employees"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
@@ -46,6 +46,8 @@ interface Session {
   queueDepth?: number
   lastActivity?: string
   createdAt?: string
+  archivedAt?: string | null
+  archivedTo?: string | null
   [key: string]: unknown
 }
 
@@ -220,6 +222,53 @@ function StatusDot({
         boxShadow: pulse ? `0 0 8px ${color}` : "none",
       }}
     />
+  )
+}
+
+function ArchivedSessionRow({
+  session,
+  selectedId,
+  successorTitle,
+  onSelect,
+  fixTitle,
+}: {
+  session: Session
+  selectedId: string | null
+  successorTitle: string | undefined
+  onSelect: (id: string) => void
+  fixTitle: (title: string | undefined, employee: string | undefined) => string
+}) {
+  const isActive = session.id === selectedId
+  const title = cleanPreview(fixTitle(session.title, session.employee)) || "Untitled"
+  const archivedAt = formatTime(session.archivedAt ?? session.lastActivity ?? session.createdAt)
+  return (
+    <button
+      onClick={() => onSelect(session.id)}
+      title={successorTitle ? `Archived — continued in "${successorTitle}"` : "Archived"}
+      className={cn(
+        "group/archived flex w-full items-center gap-2 border-l-2 px-4 py-1.5 pl-6 text-left transition-colors",
+        isActive
+          ? "border-l-[var(--accent)] bg-[var(--fill-secondary)]"
+          : "border-l-transparent hover:bg-accent",
+      )}
+    >
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-xs",
+          isActive ? "font-semibold text-foreground" : "text-[var(--text-tertiary)]",
+        )}
+      >
+        {title}
+      </span>
+      {successorTitle ? (
+        <span className="flex shrink-0 items-center gap-1 text-[10px] text-[var(--text-quaternary)]">
+          <ArrowRight className="size-3" />
+          <span className="max-w-[110px] truncate">{successorTitle}</span>
+        </span>
+      ) : (
+        <span className="shrink-0 text-[10px] text-[var(--text-quaternary)]">{archivedAt}</span>
+      )}
+    </button>
   )
 }
 
@@ -679,6 +728,16 @@ export function ChatSidebar({
     })
   }, [])
 
+  const toggleArchivedCollapsed = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has("archived")) next.delete("archived")
+      else next.add("archived")
+      saveCollapsedState(next)
+      return next
+    })
+  }, [])
+
   const toggleEmployeeExpanded = useCallback((empName: string) => {
     setExpanded((prev) => {
       const next = { ...prev, [empName]: !prev[empName] }
@@ -785,7 +844,7 @@ export function ChatSidebar({
     } catch {}
   }
 
-  const { pinnedFlat, unpinnedFlat, sortedCron, cronSessions } = useMemo(() => {
+  const { pinnedFlat, unpinnedFlat, sortedCron, cronSessions, archivedSessions } = useMemo(() => {
     const displayed = search.trim()
       ? sessions.filter((s) => {
           const q = search.toLowerCase()
@@ -801,9 +860,17 @@ export function ChatSidebar({
 
     const cronSessions: Session[] = []
     const directSessions: Session[] = []
+    const archivedSessions: Session[] = []
     const employeeSessionMap = new Map<string, Session[]>()
 
     for (const s of displayed) {
+      // Archived sessions get pulled out of the main flow into their own
+      // bottom-of-sidebar collapsible group so they don't clutter the active
+      // employee/direct rows.
+      if (s.status === "archived") {
+        archivedSessions.push(s)
+        continue
+      }
       if (isCronSession(s)) cronSessions.push(s)
       else if (isDirectSession(s, portalSlug)) directSessions.push(s)
       else {
@@ -858,12 +925,26 @@ export function ChatSidebar({
 
     const sortedCron = sortSessionsByActivity(cronSessions)
 
-    return { pinnedFlat, unpinnedFlat, sortedCron, cronSessions }
+    return { pinnedFlat, unpinnedFlat, sortedCron, cronSessions, archivedSessions: sortSessionsByActivity(archivedSessions) }
   }, [sessions, search, employeeData, portalSlug, portalName, pinnedSessions])
 
   const cronCollapsed = collapsed.has("cron")
+  const archivedCollapsed = collapsed.has("archived")
 
-  // Emit flat session order for keyboard navigation (J/K/E shortcuts)
+  // Look up successor titles by id for the archived rows' "→ {successor}" hint.
+  // Build from the full sessions list (not the search-filtered `displayed`) so
+  // the successor's title resolves even when the search hides it.
+  const sessionTitleById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const s of sessions) {
+      if (s.title) map.set(s.id, s.title)
+    }
+    return map
+  }, [sessions])
+
+  // Emit flat session order for keyboard navigation (J/K/E shortcuts).
+  // Archived sessions are intentionally excluded — they're read-only audit
+  // artifacts and J/K navigation should stay on the active session list.
   const orderRef = useRef<string>('')
   const allFlatIds = useMemo(() => {
     const ids: string[] = []
@@ -956,6 +1037,8 @@ export function ChatSidebar({
     | { kind: "employee"; item: FlatItem }
     | { kind: "cron-header" }
     | { kind: "cron-session"; session: Session }
+    | { kind: "archived-header" }
+    | { kind: "archived-session"; session: Session }
 
   const virtualItems = useMemo<VirtualItem[]>(() => {
     const list: VirtualItem[] = []
@@ -967,8 +1050,14 @@ export function ChatSidebar({
         for (const s of sortedCron) list.push({ kind: "cron-session", session: s })
       }
     }
+    if (archivedSessions.length > 0) {
+      list.push({ kind: "archived-header" })
+      if (!archivedCollapsed) {
+        for (const s of archivedSessions) list.push({ kind: "archived-session", session: s })
+      }
+    }
     return list
-  }, [pinnedFlat, unpinnedFlat, cronSessions.length, cronCollapsed, sortedCron])
+  }, [pinnedFlat, unpinnedFlat, cronSessions.length, cronCollapsed, sortedCron, archivedSessions, archivedCollapsed])
 
   const VIRTUALIZE_THRESHOLD = 50
   const shouldVirtualize = virtualItems.length >= VIRTUALIZE_THRESHOLD
@@ -979,8 +1068,8 @@ export function ChatSidebar({
     estimateSize: (index) => {
       if (!shouldVirtualize) return 36
       const vi = virtualItems[index]
-      if (vi.kind === "cron-header") return 36
-      if (vi.kind === "cron-session") return 36
+      if (vi.kind === "cron-header" || vi.kind === "archived-header") return 36
+      if (vi.kind === "cron-session" || vi.kind === "archived-session") return 36
       // employee row
       return 64
     },
@@ -1076,6 +1165,31 @@ export function ChatSidebar({
                     </div>
                   ) : vi.kind === "cron-session" ? (
                     <SessionRow key={vi.session.id} session={vi.session} {...sharedRowProps} />
+                  ) : vi.kind === "archived-header" ? (
+                    <div className={cn("mt-2", pinnedFlat.length === 0 && unpinnedFlat.length === 0 && cronSessions.length === 0 && "mt-0")}>
+                      <button
+                        onClick={toggleArchivedCollapsed}
+                        className="flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent"
+                      >
+                        <Archive className="size-3.5 text-muted-foreground" />
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          Archived
+                        </span>
+                        <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                          {archivedSessions.length}
+                        </span>
+                        <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", archivedCollapsed && "-rotate-90")} />
+                      </button>
+                    </div>
+                  ) : vi.kind === "archived-session" ? (
+                    <ArchivedSessionRow
+                      key={vi.session.id}
+                      session={vi.session}
+                      selectedId={selectedId}
+                      successorTitle={vi.session.archivedTo ? sessionTitleById.get(vi.session.archivedTo) : undefined}
+                      onSelect={onSelect}
+                      fixTitle={fixTitleCb}
+                    />
                   ) : null}
                 </div>
               )
@@ -1125,6 +1239,34 @@ export function ChatSidebar({
                 </button>
                 {!cronCollapsed ? sortedCron.map((session) => (
                   <SessionRow key={session.id} session={session} {...sharedRowProps} />
+                )) : null}
+              </div>
+            ) : null}
+
+            {archivedSessions.length > 0 ? (
+              <div className={cn("mt-2", pinnedFlat.length === 0 && unpinnedFlat.length === 0 && cronSessions.length === 0 && "mt-0")}>
+                <button
+                  onClick={toggleArchivedCollapsed}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left transition-colors hover:bg-accent"
+                >
+                  <Archive className="size-3.5 text-muted-foreground" />
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Archived
+                  </span>
+                  <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                    {archivedSessions.length}
+                  </span>
+                  <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", archivedCollapsed && "-rotate-90")} />
+                </button>
+                {!archivedCollapsed ? archivedSessions.map((session) => (
+                  <ArchivedSessionRow
+                    key={session.id}
+                    session={session}
+                    selectedId={selectedId}
+                    successorTitle={session.archivedTo ? sessionTitleById.get(session.archivedTo) : undefined}
+                    onSelect={onSelect}
+                    fixTitle={fixTitleCb}
+                  />
                 )) : null}
               </div>
             ) : null}
