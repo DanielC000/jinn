@@ -5,5 +5,7 @@ dist/
 *.tsbuildinfo
 .env
 .env.local
+# npm publish token (jinn-cli) — local only, never commit
+packages/jimmy/.npmrc
 .worktrees/
 .DS_Store
