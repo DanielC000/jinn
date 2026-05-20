@@ -200,6 +200,8 @@ export interface Employee {
   maxCostUsd?: number;
   /** Default effort level for sessions assigned to this employee */
   effortLevel?: string;
+  /** Whether to notify the parent session when this employee's child session completes. Default: true */
+  alwaysNotify?: boolean;
   /** Who this employee reports to. String = single parent. Array = primary + dotted-line (future). */
   reportsTo?: string | string[];
   /** Services this employee provides to the org */
@@ -404,6 +406,10 @@ export interface JinnConfig {
     alertConnector?: string;
     /** If a cron job takes longer than this (ms), post a latency warning to the alert channel. Default: 300000 (5 min). */
     alertThresholdMs?: number;
+  };
+  notifications?: {
+    connector?: string;  // defaults to "discord"
+    channel?: string;    // Discord channel ID for admin notifications
   };
   portal?: PortalConfig;
   context?: {

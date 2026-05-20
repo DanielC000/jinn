@@ -18,6 +18,7 @@ import {
   insertMessage,
   updateSession,
 } from "./registry.js";
+import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { buildContext } from "./context.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
@@ -399,6 +400,10 @@ export class SessionManager {
                 ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
                 : null;
 
+              notifyDiscordChannel(
+                `⚠️ Claude usage limit reached. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} switching to GPT.`,
+              );
+
               await connector.replyMessage(
                 target,
                 `⚠️ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}. Switching to GPT for now.`,
@@ -428,7 +433,7 @@ export class SessionManager {
                 await connector.removeReaction(target, "eyes").catch(() => {});
               }
 
-              updateSession(session.id, {
+              const updated = updateSession(session.id, {
                 engineSessionId: fallbackResult.sessionId,
                 status: fallbackResult.error ? "error" : "idle",
                 replyContext: msg.replyContext,
@@ -437,11 +442,19 @@ export class SessionManager {
                 lastActivity: new Date().toISOString(),
                 lastError: fallbackResult.error ?? null,
               });
+              if (updated) {
+                notifyParentSession(updated, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+              }
             },
             onWaitingStart: async ({ resumeAt }) => {
               const resumeText = resumeAt
                 ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
                 : null;
+
+              // Send hardcoded Discord notification — does not depend on LLM
+              notifyDiscordChannel(
+                `⚠️ Claude usage limit reached. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
+              );
 
               // Clear "thinking" UI and show waiting state
               if (decorateMessages && connector.setTypingStatus) {
@@ -451,6 +464,14 @@ export class SessionManager {
                 await connector.removeReaction(target, "eyes").catch(() => {});
                 await connector.addReaction(target, waitEmoji).catch(() => {});
               }
+
+              const waitingSession = getSessionBySessionKey(msg.sessionKey) ?? session;
+              notifyRateLimited(
+                waitingSession,
+                resumeAt
+                  ? resumeAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+                  : undefined,
+              );
 
               await connector.replyMessage(
                 target,
@@ -498,7 +519,7 @@ export class SessionManager {
               }
 
               await connector.replyMessage(target, retryText).catch(() => {});
-              updateSession(session.id, {
+              const retryUpdated = updateSession(session.id, {
                 ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
                 status: retryResult.error ? "error" : "idle",
                 replyContext: msg.replyContext,
@@ -507,8 +528,18 @@ export class SessionManager {
                 lastActivity: new Date().toISOString(),
                 lastError: retryResult.error ?? null,
               });
+              if (retryUpdated) {
+                notifyRateLimitResumed(retryUpdated);
+                notifyDiscordChannel(
+                  `✅ Claude usage limit cleared. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} resumed.`,
+                );
+                notifyParentSession(retryUpdated, { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+              }
             },
             onTimeout: async () => {
+              notifyDiscordChannel(
+                `❌ Claude usage limit did not clear in time. Session ${session.id}${session.employee ? ` (${session.employee})` : ""} has been stopped.`,
+              );
               await connector.replyMessage(target, "Usage limit didn't reset in time. Please try again later.").catch(() => {});
               updateSession(session.id, {
                 status: "error",
@@ -546,7 +577,7 @@ export class SessionManager {
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});
       }
-      updateSession(session.id, {
+      const updatedSession = updateSession(session.id, {
         ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
         status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
         replyContext: msg.replyContext,
@@ -561,6 +592,9 @@ export class SessionManager {
         lastActivity: new Date().toISOString(),
         lastError: wasInterrupted ? null : (result.error ?? null),
       });
+      if (updatedSession) {
+        notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+      }
 
       logger.info(
         `Session ${session.id} completed in ${result.durationMs ?? 0}ms` +
@@ -570,11 +604,14 @@ export class SessionManager {
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.error(`Session ${session.id} error: ${errMsg}`);
 
-      updateSession(session.id, {
+      const erroredSession = updateSession(session.id, {
         status: "error",
         lastActivity: new Date().toISOString(),
         lastError: errMsg,
       });
+      if (erroredSession) {
+        notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
+      }
 
       // Clear typing indicator on error
       if (decorateMessages && connector.setTypingStatus) {
