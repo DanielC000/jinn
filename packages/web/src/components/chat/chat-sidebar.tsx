@@ -1,13 +1,15 @@
 
 import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
+import { useQueryClient } from "@tanstack/react-query"
 import { Archive, ArrowRight, ChevronDown, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
-import { api, type Employee } from "@/lib/api"
+import { api, type Employee, type SessionsResponse } from "@/lib/api"
 import { useOrg } from "@/hooks/use-employees"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
 import { useSettings } from "@/routes/settings-provider"
 import { cleanPreview } from "@/lib/clean-preview"
-import { useSessions, useUpdateSession, useDeleteSession, useBulkDeleteSessions, useDuplicateSession } from "@/hooks/use-sessions"
+import { queryKeys } from "@/lib/query-keys"
+import { useSessions, useSessionCounts, useSessionSearch, useUpdateSession, useDeleteSession, useBulkDeleteSessions, useDuplicateSession } from "@/hooks/use-sessions"
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -76,7 +78,16 @@ interface FlatItem {
   session?: Session
   sortKey: string
   pinKey: string
+  /** Server group key for "load more" (employee slug, or a sentinel). */
+  groupKey?: string
+  /** True total in this group (may exceed loaded `sessions.length`). */
+  total?: number
 }
+
+// Server-side group sentinels — must match CRON_GROUP/DIRECT_GROUP in the
+// backend registry (sessions are bounded per group; "load more" fetches the rest).
+const DIRECT_GROUP = "__direct__"
+const CRON_GROUP = "__cron__"
 
 const COLLAPSE_STORAGE_KEY = "jinn-sidebar-collapsed"
 const EXPANDED_STORAGE_KEY = "jinn-sidebar-expanded"
@@ -187,6 +198,11 @@ function isCronSession(session: Session): boolean {
 
 function isDirectSession(session: Session, portalSlug: string): boolean {
   return !isCronSession(session) && (!session.employee || session.employee === portalSlug)
+}
+
+// Sources the sidebar renders (others, e.g. slack/telegram, are shown elsewhere).
+function isVisibleSource(s: Session): boolean {
+  return s.source === "web" || s.source === "cron" || s.source === "whatsapp" || s.source === "discord" || !s.source
 }
 
 function getSessionActivity(session: Session): string {
@@ -458,7 +474,6 @@ interface EmployeeRowProps {
   readSessions: Set<string>
   pinnedSessions: Set<string>
   expanded: Record<string, boolean>
-  fullyExpanded: Record<string, boolean>
   renamingSessionId: string | null
   renameCancelledRef: React.MutableRefObject<boolean>
   fixTitle: (title: string | undefined, employee: string | undefined) => string
@@ -468,7 +483,8 @@ interface EmployeeRowProps {
   handleMarkAllRead: (sessions: Session[]) => void
   handleEmployeeClick: (item: FlatItem) => void
   setDeleteTarget: (target: { type: "session" | "employee"; id: string; label: string; sessions?: Session[] } | null) => void
-  setFullyExpanded: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
+  onLoadMore: (groupKey: string, offset: number) => void
+  loadingMore: Set<string>
   setRenamingSessionId: (id: string | null) => void
   updateSessionTitle: (id: string, title: string) => void
   handleDuplicate: (sessionId: string) => void
@@ -480,7 +496,6 @@ const EmployeeRow = React.memo(function EmployeeRow({
   readSessions,
   pinnedSessions,
   expanded,
-  fullyExpanded,
   renamingSessionId,
   renameCancelledRef,
   fixTitle,
@@ -490,7 +505,8 @@ const EmployeeRow = React.memo(function EmployeeRow({
   handleMarkAllRead,
   handleEmployeeClick,
   setDeleteTarget,
-  setFullyExpanded,
+  onLoadMore,
+  loadingMore,
   setRenamingSessionId,
   updateSessionTitle,
   handleDuplicate,
@@ -506,7 +522,11 @@ const EmployeeRow = React.memo(function EmployeeRow({
   const pulse = latestSession.status === "running"
   const isActive = empSessions.some((s) => s.id === selectedId)
   const isPinned = pinnedSessions.has(item.pinKey)
-  const sessionCount = empSessions.length
+  const loadedCount = empSessions.length
+  // True total from the server; may exceed what's loaded so far.
+  const sessionCount = item.total ?? loadedCount
+  const groupKey = item.groupKey ?? empName
+  const isLoadingMore = loadingMore.has(groupKey)
   const isExpanded = expanded[empName] || false
   const hasUnread = empSessions.some(
     (s) => !readSessions.has(s.id) && s.status !== "running" && s.status !== "error"
@@ -612,17 +632,18 @@ const EmployeeRow = React.memo(function EmployeeRow({
         </ContextMenuContent>
       </ContextMenu>
 
-      {isExpanded && sessionCount > 1 ? (
-        (fullyExpanded[empName] ? empSessions : empSessions.slice(0, 5)).map((session) => (
+      {isExpanded && loadedCount > 1 ? (
+        empSessions.map((session) => (
           <SessionRow key={session.id} session={session} parentSessions={empSessions} {...sessionRowProps} />
         ))
       ) : null}
-      {isExpanded && sessionCount > 5 && !fullyExpanded[empName] ? (
+      {isExpanded && loadedCount < sessionCount ? (
         <button
-          onClick={() => setFullyExpanded((prev) => ({ ...prev, [empName]: true }))}
-          className="w-full cursor-pointer px-4 pb-2 pl-11 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)]"
+          onClick={() => onLoadMore(groupKey, loadedCount)}
+          disabled={isLoadingMore}
+          className="w-full cursor-pointer px-4 pb-2 pl-11 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)] disabled:opacity-50"
         >
-          +{sessionCount - 5} more
+          {isLoadingMore ? "Loading…" : `+${sessionCount - loadedCount} more`}
         </button>
       ) : null}
     </div>
@@ -643,7 +664,10 @@ export function ChatSidebar({
   const portalName = settings.portalName ?? "Jinn"
   const portalSlug = portalName.toLowerCase()
 
+  const qc = useQueryClient()
   const { data: rawSessions, isLoading: loading } = useSessions()
+  const { data: meta } = useSessionCounts()
+  const counts = meta?.counts ?? {}
   const updateSessionMutation = useUpdateSession()
   const deleteSessionMutation = useDeleteSession()
   const bulkDeleteMutation = useBulkDeleteSessions()
@@ -651,9 +675,7 @@ export function ChatSidebar({
 
   const sessions = useMemo(() => {
     if (!rawSessions) return []
-    const filtered = (rawSessions as Session[]).filter(
-      (s) => s.source === "web" || s.source === "cron" || s.source === "whatsapp" || s.source === "discord" || !s.source
-    )
+    const filtered = (rawSessions as Session[]).filter(isVisibleSource)
     filtered.sort((a, b) => {
       const ta = a.lastActivity || a.createdAt || ""
       const tb = b.lastActivity || b.createdAt || ""
@@ -663,13 +685,15 @@ export function ChatSidebar({
   }, [rawSessions])
 
   const [search, setSearch] = useState("")
+  // Search spans ALL sessions server-side (the loaded page is only a subset).
+  const { data: searchResults } = useSessionSearch(search)
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null)
   const renameCancelledRef = useRef(false)
   const [readSessions, setReadSessions] = useState<Set<string>>(new Set())
   const [pinnedSessions, setPinnedSessions] = useState<Set<string>>(new Set())
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const [fullyExpanded, setFullyExpanded] = useState<Record<string, boolean>>({})
+  const [loadingMore, setLoadingMore] = useState<Set<string>>(new Set())
   const [deleteTarget, setDeleteTarget] = useState<{
     type: "session" | "employee"
     id: string
@@ -738,17 +762,33 @@ export function ChatSidebar({
     })
   }, [])
 
+  // Fetch the next page for one group and merge it into the cached session list.
+  const handleLoadMore = useCallback(async (groupKey: string, offset: number) => {
+    if (loadingMore.has(groupKey)) return
+    setLoadingMore((prev) => new Set(prev).add(groupKey))
+    try {
+      const more = await api.getSessionsForGroup(groupKey, offset, 50)
+      qc.setQueryData<SessionsResponse>(queryKeys.sessions.all, (old) => {
+        if (!old) return old
+        const seen = new Set(old.sessions.map((s) => s.id as string))
+        const merged = [...old.sessions, ...more.filter((s) => !seen.has(s.id as string))]
+        return { ...old, sessions: merged }
+      })
+    } catch {
+      /* surfaced by the disabled state resetting; non-fatal */
+    } finally {
+      setLoadingMore((prev) => {
+        const next = new Set(prev)
+        next.delete(groupKey)
+        return next
+      })
+    }
+  }, [qc, loadingMore])
+
   const toggleEmployeeExpanded = useCallback((empName: string) => {
     setExpanded((prev) => {
       const next = { ...prev, [empName]: !prev[empName] }
       saveExpandedState(next)
-      if (!next[empName]) {
-        setFullyExpanded((fe) => {
-          if (!fe[empName]) return fe
-          const { [empName]: _, ...rest } = fe
-          return rest
-        })
-      }
       return next
     })
   }, [])
@@ -803,8 +843,7 @@ export function ChatSidebar({
           if (empSessions.length === 1) {
             allVisible.push(empSessions[0].id)
           } else if (expanded[empName]) {
-            const visible = fullyExpanded[empName] ? empSessions : empSessions.slice(0, 5)
-            for (const s of visible) allVisible.push(s.id)
+            for (const s of empSessions) allVisible.push(s.id)
           } else {
             // Collapsed — only the latest session is reachable
             if (empSessions.length > 0) allVisible.push(empSessions[0].id)
@@ -844,18 +883,12 @@ export function ChatSidebar({
     } catch {}
   }
 
-  const { pinnedFlat, unpinnedFlat, sortedCron, cronSessions, archivedSessions } = useMemo(() => {
-    const displayed = search.trim()
-      ? sessions.filter((s) => {
-          const q = search.toLowerCase()
-          const empData = s.employee ? employeeData.get(s.employee) : undefined
-          return (
-            s.id.toLowerCase().includes(q) ||
-            (s.employee && s.employee.toLowerCase().includes(q)) ||
-            (empData?.displayName && empData.displayName.toLowerCase().includes(q)) ||
-            (s.title && s.title.toLowerCase().includes(q))
-          )
-        })
+  const { pinnedFlat, unpinnedFlat, sortedCron, cronSessions, cronTotal, archivedSessions } = useMemo(() => {
+    // When searching, use server results (spans all sessions); "load more" is
+    // disabled in this mode since totals reflect the search, not each group.
+    const searching = search.trim().length > 0
+    const displayed = searching
+      ? ((searchResults as Session[] | undefined) ?? []).filter(isVisibleSource)
       : sessions
 
     const cronSessions: Session[] = []
@@ -891,6 +924,8 @@ export function ChatSidebar({
         sessions: sorted,
         sortKey: getSessionActivity(sorted[0]),
         pinKey: `emp:${empName}`,
+        groupKey: empName,
+        total: searching ? sorted.length : (counts[empName] ?? sorted.length),
       })
     }
 
@@ -913,6 +948,8 @@ export function ChatSidebar({
         sessions: sorted,
         sortKey: getSessionActivity(sorted[0]),
         pinKey: `emp:${portalSlug}`,
+        groupKey: DIRECT_GROUP,
+        total: searching ? sorted.length : (counts[DIRECT_GROUP] ?? sorted.length),
       })
     }
 
@@ -924,9 +961,10 @@ export function ChatSidebar({
       .sort((a, b) => b.sortKey.localeCompare(a.sortKey))
 
     const sortedCron = sortSessionsByActivity(cronSessions)
+    const cronTotal = searching ? cronSessions.length : (counts[CRON_GROUP] ?? cronSessions.length)
 
-    return { pinnedFlat, unpinnedFlat, sortedCron, cronSessions, archivedSessions: sortSessionsByActivity(archivedSessions) }
-  }, [sessions, search, employeeData, portalSlug, portalName, pinnedSessions])
+    return { pinnedFlat, unpinnedFlat, sortedCron, cronSessions, cronTotal, archivedSessions: sortSessionsByActivity(archivedSessions) }
+  }, [sessions, search, searchResults, employeeData, portalSlug, portalName, pinnedSessions, counts])
 
   const cronCollapsed = collapsed.has("cron")
   const archivedCollapsed = collapsed.has("archived")
@@ -1037,6 +1075,7 @@ export function ChatSidebar({
     | { kind: "employee"; item: FlatItem }
     | { kind: "cron-header" }
     | { kind: "cron-session"; session: Session }
+    | { kind: "cron-more" }
     | { kind: "archived-header" }
     | { kind: "archived-session"; session: Session }
 
@@ -1048,6 +1087,7 @@ export function ChatSidebar({
       list.push({ kind: "cron-header" })
       if (!cronCollapsed) {
         for (const s of sortedCron) list.push({ kind: "cron-session", session: s })
+        if (cronSessions.length < cronTotal) list.push({ kind: "cron-more" })
       }
     }
     if (archivedSessions.length > 0) {
@@ -1057,7 +1097,7 @@ export function ChatSidebar({
       }
     }
     return list
-  }, [pinnedFlat, unpinnedFlat, cronSessions.length, cronCollapsed, sortedCron, archivedSessions, archivedCollapsed])
+  }, [pinnedFlat, unpinnedFlat, cronSessions.length, cronCollapsed, sortedCron, cronTotal, archivedSessions, archivedCollapsed])
 
   const VIRTUALIZE_THRESHOLD = 50
   const shouldVirtualize = virtualItems.length >= VIRTUALIZE_THRESHOLD
@@ -1141,10 +1181,10 @@ export function ChatSidebar({
                       key={vi.item.pinKey}
                       item={vi.item}
                       expanded={expanded}
-                      fullyExpanded={fullyExpanded}
                       handleEmployeeClick={handleEmployeeClick}
                       handleMarkAllRead={handleMarkAllRead}
-                      setFullyExpanded={setFullyExpanded}
+                      onLoadMore={handleLoadMore}
+                      loadingMore={loadingMore}
                       {...sharedRowProps}
                     />
                   ) : vi.kind === "cron-header" ? (
@@ -1158,13 +1198,21 @@ export function ChatSidebar({
                           Scheduled
                         </span>
                         <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
-                          {cronSessions.length}
+                          {cronTotal}
                         </span>
                         <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", cronCollapsed && "-rotate-90")} />
                       </button>
                     </div>
                   ) : vi.kind === "cron-session" ? (
                     <SessionRow key={vi.session.id} session={vi.session} {...sharedRowProps} />
+                  ) : vi.kind === "cron-more" ? (
+                    <button
+                      onClick={() => handleLoadMore(CRON_GROUP, cronSessions.length)}
+                      disabled={loadingMore.has(CRON_GROUP)}
+                      className="w-full cursor-pointer px-4 pb-2 pl-11 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)] disabled:opacity-50"
+                    >
+                      {loadingMore.has(CRON_GROUP) ? "Loading…" : `+${cronTotal - cronSessions.length} more`}
+                    </button>
                   ) : vi.kind === "archived-header" ? (
                     <div className={cn("mt-2", pinnedFlat.length === 0 && unpinnedFlat.length === 0 && cronSessions.length === 0 && "mt-0")}>
                       <button
@@ -1202,10 +1250,10 @@ export function ChatSidebar({
                 key={item.pinKey}
                 item={item}
                 expanded={expanded}
-                fullyExpanded={fullyExpanded}
                 handleEmployeeClick={handleEmployeeClick}
                 handleMarkAllRead={handleMarkAllRead}
-                setFullyExpanded={setFullyExpanded}
+                onLoadMore={handleLoadMore}
+                loadingMore={loadingMore}
                 {...sharedRowProps}
               />
             ))}
@@ -1214,10 +1262,10 @@ export function ChatSidebar({
                 key={item.pinKey}
                 item={item}
                 expanded={expanded}
-                fullyExpanded={fullyExpanded}
                 handleEmployeeClick={handleEmployeeClick}
                 handleMarkAllRead={handleMarkAllRead}
-                setFullyExpanded={setFullyExpanded}
+                onLoadMore={handleLoadMore}
+                loadingMore={loadingMore}
                 {...sharedRowProps}
               />
             ))}
@@ -1233,13 +1281,22 @@ export function ChatSidebar({
                     Scheduled
                   </span>
                   <span className="ml-auto rounded bg-[var(--fill-tertiary)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">
-                    {cronSessions.length}
+                    {cronTotal}
                   </span>
                   <ChevronDown className={cn("size-3.5 text-muted-foreground transition-transform", cronCollapsed && "-rotate-90")} />
                 </button>
                 {!cronCollapsed ? sortedCron.map((session) => (
                   <SessionRow key={session.id} session={session} {...sharedRowProps} />
                 )) : null}
+                {!cronCollapsed && cronSessions.length < cronTotal ? (
+                  <button
+                    onClick={() => handleLoadMore(CRON_GROUP, cronSessions.length)}
+                    disabled={loadingMore.has(CRON_GROUP)}
+                    className="w-full cursor-pointer px-4 pb-2 pl-11 text-left text-[10px] text-[var(--text-quaternary)] transition-colors hover:text-[var(--text-secondary)] disabled:opacity-50"
+                  >
+                    {loadingMore.has(CRON_GROUP) ? "Loading…" : `+${cronTotal - cronSessions.length} more`}
+                  </button>
+                ) : null}
               </div>
             ) : null}
 
