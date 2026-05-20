@@ -1,4 +1,5 @@
 import TelegramBot from "node-telegram-bot-api";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type {
@@ -147,12 +148,19 @@ export class TelegramConnector implements Connector {
         fs.mkdirSync(TMP_DIR, { recursive: true });
         for (const spec of specs) {
           try {
-            const localPath: string = await (this.bot as any).downloadFile(
+            const downloaded: string = await (this.bot as any).downloadFile(
               spec.file_id,
               TMP_DIR,
             );
+            // Rename to a UUID so repeat Telegram basenames don't collide
+            // (matches the Slack connector's downloadAttachment pattern).
+            const ext =
+              path.extname(downloaded) ||
+              (spec.name ? path.extname(spec.name) : "");
+            const localPath = path.join(TMP_DIR, `${randomUUID()}${ext}`);
+            fs.renameSync(downloaded, localPath);
             attachments.push({
-              name: spec.name || path.basename(localPath),
+              name: spec.name || path.basename(downloaded),
               url: localPath,
               mimeType: spec.mime || "application/octet-stream",
               localPath,
