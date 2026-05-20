@@ -40,7 +40,6 @@ export class TelegramConnector implements Connector {
 
   private readonly sttConfig?: TelegramConnectorConfig["stt"];
   private sttChain: Promise<unknown> = Promise.resolve();
-  private sttQueueDepth = 0;
 
   constructor(config: TelegramConnectorConfig) {
     this.bot = new TelegramBot(config.botToken, { polling: false });
@@ -105,91 +104,101 @@ export class TelegramConnector implements Connector {
       let messageText: string =
         (telegramMsg as any).text || (telegramMsg as any).caption || "";
 
-      // Voice / audio / video_note → transcribe via STT module
+      // Voice / audio / video_note → transcribe via STT module.
+      // If STT can't run for any reason, drop the message with a user-facing
+      // explanation rather than forwarding empty text downstream (which would
+      // crash session resume — see #54).
       const voiceLike =
         (telegramMsg as any).voice ||
         (telegramMsg as any).audio ||
         (telegramMsg as any).video_note;
 
-      if (voiceLike && this.sttConfig?.enabled) {
-        const model = this.sttConfig.model || "small";
-        if (!getModelPath(model)) {
-          logger.warn(
-            `[telegram] STT model '${model}' not downloaded — skipping transcription`,
-          );
-        } else {
-          const langs = resolveLanguages(this.sttConfig);
-          const language = langs.length === 1 ? langs[0] : "auto";
+      if (voiceLike) {
+        const model = this.sttConfig?.model || "small";
+        let unavailable: string | null = null;
+        if (!this.sttConfig?.enabled) {
+          unavailable = "voice transcription is not enabled on this gateway";
+        } else if (!getModelPath(model)) {
+          unavailable = `STT model '${model}' is not downloaded`;
+        }
 
-          // Serialize transcriptions: parallel whisper-cli runs OOM on small boxes.
-          this.sttQueueDepth = (this.sttQueueDepth || 0) + 1;
-          const myPosition = this.sttQueueDepth;
-          if (myPosition > 1) {
-            logger.info(
-              `[telegram] Voice message queued (position ${myPosition}, ${myPosition - 1} ahead)`,
-            );
-            try {
-              await this.bot.sendMessage(
-                telegramMsg.chat.id,
-                `⏳ Queued — ${myPosition - 1} voice message${myPosition - 1 === 1 ? "" : "s"} ahead. I'll transcribe yours when its turn comes up.`,
-              );
-            } catch {
-              /* non-fatal */
-            }
-          }
-
-          const myTurn = this.sttChain.then(async () => {
-            try {
-              await this.bot.sendChatAction(telegramMsg.chat.id, "typing");
-            } catch {
-              /* non-fatal */
-            }
-            logger.info(
-              `[telegram] Transcribing voice message (${voiceLike.duration}s, lang=${language})`,
-            );
-            const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tg-stt-"));
-            try {
-              const localPath = await (this.bot as any).downloadFile(
-                voiceLike.file_id,
-                tmpDir,
-              );
-              return await sttTranscribe(localPath, model, language);
-            } finally {
-              try {
-                fs.rmSync(tmpDir, { recursive: true, force: true });
-              } catch {
-                /* non-fatal */
-              }
-            }
-          });
-          this.sttChain = myTurn
-            .catch(() => undefined)
-            .finally(() => {
-              this.sttQueueDepth = Math.max(0, (this.sttQueueDepth || 1) - 1);
-            });
-
+        if (unavailable) {
+          logger.warn(`[telegram] Dropping voice message: ${unavailable}`);
           try {
-            const text = await myTurn;
-            if (text) {
-              messageText = messageText ? `${messageText}\n\n${text}` : text;
-              logger.info(`[telegram] Transcribed ${text.length} chars`);
-            } else {
-              logger.warn("[telegram] Transcription returned empty text");
-            }
-          } catch (err) {
-            logger.error(
-              `[telegram] STT failed: ${err instanceof Error ? err.message : err}`,
+            await this.bot.sendMessage(
+              telegramMsg.chat.id,
+              `⚠️ Couldn't transcribe your voice message — ${unavailable}. Please type instead.`,
             );
+          } catch {
+            /* non-fatal */
+          }
+          return;
+        }
+
+        const langs = resolveLanguages(this.sttConfig);
+        const language = langs.length === 1 ? langs[0] : "auto";
+
+        // Serialize transcriptions: parallel whisper-cli runs OOM on small hosts.
+        const myTurn = this.sttChain.then(async () => {
+          try {
+            await this.bot.sendChatAction(telegramMsg.chat.id, "typing");
+          } catch {
+            /* non-fatal */
+          }
+          logger.info(
+            `[telegram] Transcribing voice message (${voiceLike.duration}s, lang=${language})`,
+          );
+          const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tg-stt-"));
+          try {
+            const localPath = await (this.bot as any).downloadFile(
+              voiceLike.file_id,
+              tmpDir,
+            );
+            return await sttTranscribe(localPath, model, language);
+          } finally {
             try {
-              await this.bot.sendMessage(
-                telegramMsg.chat.id,
-                "⚠️ Couldn't transcribe your voice message. Please try again or type instead.",
-              );
+              fs.rmSync(tmpDir, { recursive: true, force: true });
             } catch {
               /* non-fatal */
             }
-            return;
           }
+        });
+        this.sttChain = myTurn.catch(() => undefined);
+
+        let transcript: string | undefined;
+        try {
+          transcript = await myTurn;
+        } catch (err) {
+          logger.error(
+            `[telegram] STT failed: ${err instanceof Error ? err.message : err}`,
+          );
+          try {
+            await this.bot.sendMessage(
+              telegramMsg.chat.id,
+              "⚠️ Couldn't transcribe your voice message. Please try again or type instead.",
+            );
+          } catch {
+            /* non-fatal */
+          }
+          return;
+        }
+
+        if (transcript) {
+          messageText = messageText
+            ? `${messageText}\n\n${transcript}`
+            : transcript;
+          logger.info(`[telegram] Transcribed ${transcript.length} chars`);
+        } else {
+          logger.warn("[telegram] Transcription returned empty text");
+          try {
+            await this.bot.sendMessage(
+              telegramMsg.chat.id,
+              "⚠️ Couldn't make out anything in your voice message. Please try again or type instead.",
+            );
+          } catch {
+            /* non-fatal */
+          }
+          return;
         }
       }
 
