@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo, startTransition } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useQueryClient } from "@tanstack/react-query"
-import { Archive, ArrowRight, ChevronDown, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
+import { Archive, ArrowRight, ChevronDown, ChevronRight, Clock3, Copy, EllipsisVertical, Pencil, Pin, Plus, Search, Trash2, X } from "lucide-react"
 import { api, type Employee, type SessionsResponse } from "@/lib/api"
 import { useOrg } from "@/hooks/use-employees"
 import { EmployeeAvatar } from "@/components/ui/employee-avatar"
@@ -633,9 +633,11 @@ const EmployeeRow = React.memo(function EmployeeRow({
       </ContextMenu>
 
       {isExpanded && loadedCount > 1 ? (
-        empSessions.map((session) => (
-          <SessionRow key={session.id} session={session} parentSessions={empSessions} {...sessionRowProps} />
-        ))
+        <EmployeeSessions
+          empName={empName}
+          empSessions={empSessions}
+          sessionRowProps={sessionRowProps}
+        />
       ) : null}
       {isExpanded && loadedCount < sessionCount ? (
         <button
@@ -649,6 +651,82 @@ const EmployeeRow = React.memo(function EmployeeRow({
     </div>
   )
 })
+
+/**
+ * Renders an employee's expanded session list, splitting interrupted sessions
+ * into a collapsible "Interrupted (N)" sub-group below the active sessions.
+ * Collapse state is keyed per employee in localStorage. Defaults to collapsed
+ * when N > 5 (matches the queue-panel auto-collapse threshold), expanded when
+ * 1–5 (low enough to surface without scrolling).
+ */
+function EmployeeSessions({
+  empName,
+  empSessions,
+  sessionRowProps,
+}: {
+  empName: string
+  empSessions: Session[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sessionRowProps: any
+}) {
+  const { activeSessions, interruptedSessions } = useMemo(() => {
+    const active: Session[] = []
+    const interrupted: Session[] = []
+    for (const s of empSessions) {
+      if (s.status === "interrupted") interrupted.push(s)
+      else active.push(s)
+    }
+    return { activeSessions: active, interruptedSessions: interrupted }
+  }, [empSessions])
+
+  const storageKey = `jinn-interrupted-collapsed:${empName}`
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(storageKey)
+      if (raw !== null) return raw === "1"
+    } catch {/* localStorage unavailable */}
+    return interruptedSessions.length > 5
+  })
+
+  const toggle = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev
+      try { localStorage.setItem(storageKey, next ? "1" : "0") } catch {/* ignore */}
+      return next
+    })
+  }, [storageKey])
+
+  return (
+    <>
+      {activeSessions.map((session) => (
+        <SessionRow key={session.id} session={session} parentSessions={empSessions} {...sessionRowProps} />
+      ))}
+      {interruptedSessions.length > 0 ? (
+        <>
+          <button
+            type="button"
+            onClick={toggle}
+            className="flex w-full items-center gap-1.5 border-l-2 border-l-transparent px-4 py-1.5 pl-6 text-left text-[10px] uppercase tracking-wider text-[var(--text-quaternary)] transition-colors hover:bg-accent hover:text-[var(--text-secondary)]"
+            title={`${interruptedSessions.length} interrupted chat${interruptedSessions.length === 1 ? "" : "s"} for this employee — click to ${collapsed ? "expand" : "collapse"}`}
+          >
+            <ChevronRight
+              className={cn(
+                "size-3 shrink-0 transition-transform",
+                collapsed ? "" : "rotate-90"
+              )}
+            />
+            <span>Interrupted ({interruptedSessions.length})</span>
+          </button>
+          {!collapsed
+            ? interruptedSessions.map((session) => (
+                <SessionRow key={session.id} session={session} parentSessions={empSessions} {...sessionRowProps} />
+              ))
+            : null}
+        </>
+      ) : null}
+    </>
+  )
+}
 
 export function ChatSidebar({
   selectedId,

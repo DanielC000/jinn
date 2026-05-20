@@ -197,6 +197,11 @@ export interface Session {
    * (i.e. for non-archived, non-disabled sessions). Not stored.
    */
   messageCount?: number;
+  /**
+   * Computed: number of queue items in DB with status='pending' for this session.
+   * Drives the resume-banner copy ("N message(s) queued"). Not stored.
+   */
+  resumablePendingCount?: number;
 }
 
 export interface CronJob {
@@ -430,6 +435,13 @@ export interface JinnConfig {
     maxDurationMinutes?: number;
     maxCostUsd?: number;
     interruptOnNewMessage?: boolean;
+    /**
+     * On gateway startup, automatically re-dispatch every pending web queue item
+     * from a prior run. Default: **false** — pending items stay resumable per-session
+     * via the chat banner / sidebar Interrupted group. Set true to restore pre-v0.13.4
+     * behavior (mass auto-resume on boot).
+     */
+    autoResumeOnBoot?: boolean;
     /**
      * Auto-split mega-chats: when a long-running session crosses a threshold,
      * archive it and continue in a fresh successor session seeded with a

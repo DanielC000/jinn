@@ -710,11 +710,62 @@ export function recoverStaleQueueItems(): number {
   return result.changes;
 }
 
+/**
+ * Mark sessions that have pending queue items as "interrupted" so the UI surfaces
+ * a resume banner. Called on boot only when sessions.autoResumeOnBoot=false. Skips
+ * sessions already in 'archived' or 'interrupted' status.
+ */
+export function markSessionsWithPendingQueueAsInterrupted(): number {
+  const db = initDb();
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    UPDATE sessions
+    SET status = 'interrupted',
+        last_activity = ?,
+        last_error = COALESCE(last_error, 'Gateway restarted with pending queued messages — click Resume to dispatch')
+    WHERE status NOT IN ('archived', 'interrupted')
+      AND id IN (SELECT DISTINCT session_id FROM queue_items WHERE status = 'pending')
+  `).run(now);
+  return result.changes;
+}
+
+/**
+ * Count pending queue items for a single session. Used by serializeSession to
+ * drive the resume-banner copy ("N message(s) queued").
+ */
+export function countPendingQueueItemsForSession(sessionId: string): number {
+  const db = initDb();
+  const row = db.prepare(
+    "SELECT COUNT(*) AS n FROM queue_items WHERE session_id = ? AND status = 'pending'"
+  ).get(sessionId) as { n: number };
+  return row.n;
+}
+
+/**
+ * Reset queue items currently 'running' for a single session back to 'pending'.
+ * Used by the Stop endpoint so an in-flight item that gets killed mid-turn
+ * remains resumable rather than being marked completed.
+ */
+export function resetRunningQueueItemsForSession(sessionId: string): number {
+  const db = initDb();
+  const result = db.prepare(
+    "UPDATE queue_items SET status = 'pending', started_at = NULL WHERE session_id = ? AND status = 'running'"
+  ).run(sessionId);
+  return result.changes;
+}
+
 export function listAllPendingQueueItems(): QueueItem[] {
   const db = initDb();
   return db.prepare(
     "SELECT id, session_id as sessionId, session_key as sessionKey, prompt, status, position, created_at as createdAt, started_at as startedAt, completed_at as completedAt FROM queue_items WHERE status = 'pending' ORDER BY created_at ASC, position ASC"
   ).all() as QueueItem[];
+}
+
+export function listPendingQueueItemsForSession(sessionId: string): QueueItem[] {
+  const db = initDb();
+  return db.prepare(
+    "SELECT id, session_id as sessionId, session_key as sessionKey, prompt, status, position, created_at as createdAt, started_at as startedAt, completed_at as completedAt FROM queue_items WHERE session_id = ? AND status = 'pending' ORDER BY created_at ASC, position ASC"
+  ).all(sessionId) as QueueItem[];
 }
 
 // ── File management ──────────────────────────────────────────────────
