@@ -31,6 +31,7 @@ import {
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { archiveSession, isAutoSplitDue, withSummaryPrompt, AUTO_SPLIT_DEFAULTS } from "../sessions/archive.js";
+import { notifyParentSession } from "../sessions/callbacks.js";
 import { summarizeSession } from "../sessions/summarize.js";
 import { loadTranscriptMessages } from "../sessions/transcript.js";
 import {
@@ -879,6 +880,14 @@ export async function handleApiRequest(
       const prompt = body.message || body.prompt;
       if (!prompt) return badRequest(res, "message is required");
 
+      // Fork-local: child-session callbacks (callbacks.ts) post with role='notification'
+      // so the gateway renders the message as a system banner instead of a user bubble,
+      // AND so a running parent turn doesn't get interrupted when a sibling child
+      // finishes. See the `isNotification` branch below.
+      const messageRole: "user" | "notification" =
+        body.role === "notification" ? "notification" : "user";
+      const isNotification = messageRole === "notification";
+
       const config = context.getConfig();
       // CLI-mode sends route to the interactive PTY engine so the user sees their
       // prompt injected + claude's response stream in the live xterm. All other
@@ -890,7 +899,7 @@ export async function handleApiRequest(
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
 
       // Persist the message immediately
-      insertMessage(session.id, "user", prompt);
+      insertMessage(session.id, messageRole, prompt);
 
       // If a turn is already running, check whether we should interrupt or queue.
       if (session.status === "running") {
@@ -899,7 +908,10 @@ export async function handleApiRequest(
         // Headless engines lack isTurnRunning; their isAlive ≈ "turn running".
         const turnRunning = isInterruptibleEngine(engine)
           && ("isTurnRunning" in engine ? (engine as any).isTurnRunning(session.id) : engine.isAlive(session.id));
-        if ((config.sessions?.interruptOnNewMessage ?? true) && turnRunning) {
+        // Notifications (child-session completion callbacks) never interrupt — they
+        // queue behind the running parent turn so sequential multi-child reports
+        // don't kill the parent mid-processing of an earlier sibling's reply.
+        if (!isNotification && (config.sessions?.interruptOnNewMessage ?? true) && turnRunning) {
           logger.info(`Interrupting running session ${session.id} for new message`);
           engine.kill(session.id, "Interrupted: new message received");
           // SessionQueue serializes per-session; the new turn enqueued below will
@@ -2085,7 +2097,7 @@ async function runWebSession(
       insertMessage(currentSession.id, "assistant", result.result);
     }
 
-    updateSession(currentSession.id, {
+    const completedSession = updateSession(currentSession.id, {
       ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
       ...(persistModel ? { model: resolvedModel } : {}),
       status: result.error ? "error" : "idle",
@@ -2110,6 +2122,17 @@ async function runWebSession(
       }
     }
 
+    // Fork-local: if this is a child session, notify the parent so it picks up the
+    // report and chains next steps. Upstream removed this in 24ab541 — see
+    // sessions/callbacks.ts for the why. This is the load-bearing wire for web-spawned
+    // employees (POST /api/sessions creates source='web' children).
+    if (completedSession && !wasInterrupted) {
+      notifyParentSession(completedSession, {
+        result: result.result,
+        error: result.error ?? null,
+      });
+    }
+
     context.emit("session:completed", {
       sessionId: currentSession.id,
       employee: currentSession.employee || config.portal?.portalName || "Jinn",
@@ -2131,11 +2154,16 @@ async function runWebSession(
       logger.info(`Skipping error handling for deleted web session ${currentSession.id}: ${errMsg}`);
       return;
     }
-    updateSession(currentSession.id, {
+    const erroredSession = updateSession(currentSession.id, {
       status: "error",
       lastActivity: new Date().toISOString(),
       lastError: errMsg,
     });
+    // Fork-local: surface the failure to the parent too — silent child errors
+    // were the worst part of the 29-hour downstream stall on 2026-05-19.
+    if (erroredSession) {
+      notifyParentSession(erroredSession, { error: errMsg });
+    }
     context.emit("session:completed", {
       sessionId: currentSession.id,
       result: null,
