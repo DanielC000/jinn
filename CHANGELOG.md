@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.13.1] - 2026-05-20
+
+### 🐛 Fixes
+- **Restore parent-session callbacks** — the "nuke notifications" cleanup (v0.13.0) was meant to remove only the web notification bell, but it also stripped the backend mechanism that wakes a parent session when a child session replies. Child/employee sessions were finishing without ever notifying their parent/COO session, so delegated work returned silently and had to be polled for manually. Restores `notifyParentSession` and the `role:"notification"` message path (including the "don't interrupt a running parent turn" guard), `Employee.alwaysNotify`, `JinnConfig.notifications`, and the `PATCH /api/org/employees/:name` endpoint. The web bell UI stays removed.
+
 ## [0.11.0] - 2026-05-18
 
 ### ✨ Features
