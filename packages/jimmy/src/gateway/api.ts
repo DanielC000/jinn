@@ -79,6 +79,8 @@ export interface ApiContext {
   reloadConnectorInstances?: () => Promise<{ started: string[]; stopped: string[]; errors: string[] }>;
   hookRegistry?: import("./hook-registry.js").HookRegistry;
   hookSecret?: string;
+  /** Live employee registry — getter so callers see the current map after org reloads. */
+  getEmployeeRegistry?: () => Map<string, import("../shared/types.js").Employee>;
   /** PTY-backed Claude engine used by CLI-mode message sends so the user sees the
    *  prompt + response stream into the live xterm. Distinct from the headless
    *  "claude" engine in sessionManager (which chat/cron/connectors use). */
@@ -162,6 +164,102 @@ function maybeRevertEngineOverride(session: Session): Session {
   }) ?? session;
 }
 
+/**
+ * Between-turn auto-archive. Called from inside the queue's runTask after the
+ * engine finishes a turn. Triggers an archive (summarize + archiveSession +
+ * cancel any newly-arrived pending notifications on the old session) when ALL
+ * of the following hold:
+ *   - `config.sessions.autoSplit.mode === "silent"`
+ *   - the session is auto-split-due per `isAutoSplitDue()`
+ *   - there are no other turns queued after this one (we're the queue tail)
+ *   - the session isn't already archived (race-safe re-read)
+ *
+ * Best-effort: any error is logged and swallowed so a failed auto-archive
+ * doesn't poison the queue task or take the session down.
+ */
+async function maybeAutoArchive(
+  session: Session,
+  engine: Engine,
+  config: JinnConfig,
+  context: ApiContext,
+): Promise<void> {
+  try {
+    const cfg = { ...AUTO_SPLIT_DEFAULTS, ...(config?.sessions?.autoSplit ?? {}) };
+    if (cfg.mode !== "silent") return;
+    if (!cfg.enabled) return;
+
+    // Re-read so we don't act on stale flags (the user may have just clicked
+    // "disable auto-split" or another worker may have already archived).
+    const fresh = getSession(session.id);
+    if (!fresh) return;
+    if (fresh.status === "archived") return;
+    if (fresh.autoSplitDisabled) return;
+
+    const messageCount = countMessages(fresh.id);
+    const employee = fresh.employee ? context.getEmployeeRegistry?.().get(fresh.employee) : undefined;
+    const due = isAutoSplitDue({ session: fresh, messageCount, config, employee });
+    if (!due.due) return;
+
+    // Wait until we're the last turn — defer when other notifications/messages
+    // are still queued behind us. They'll fire this check on their own when
+    // they're the last one standing.
+    const sessionKey = fresh.sessionKey || fresh.sourceRef;
+    const queuedAfterUs = context.sessionManager.getQueue().getPendingCount(sessionKey);
+    if (queuedAfterUs > 0) return;
+
+    if (!fresh.engineSessionId) {
+      logger.warn(`Auto-archive skipped for ${fresh.id}: no engine_session_id yet`);
+      return;
+    }
+
+    const engineConfig = fresh.engine === "codex"
+      ? config.engines.codex
+      : fresh.engine === "gemini"
+        ? config.engines.gemini ?? config.engines.claude
+        : config.engines.claude;
+    const summarizerModel = cfg.summarizerModel;
+
+    logger.info(
+      `Auto-archive: ${fresh.id} (employee=${fresh.employee ?? "—"}, ${messageCount} messages, trigger=${due.trigger}) — summarizing…`,
+    );
+
+    const summary = await summarizeSession({
+      session: fresh,
+      engine,
+      bin: engineConfig.bin,
+      cwd: JINN_HOME,
+      model: summarizerModel,
+    });
+
+    const { newSession, reparentedChildren } = archiveSession(fresh.id, summary);
+
+    // Drop any notifications that landed during the summarizer pass — children
+    // have already been re-parented onto the successor, so they'll re-notify
+    // it as they finish their next turn. Keeping these stale items would
+    // immediately re-balloon the old session's queue (which is now dead).
+    // Mirror the manual DELETE /queue endpoint: both kill the in-memory chain
+    // so already-pending runTasks skip their fn(), and flip DB rows to
+    // 'cancelled' so the UI panel drops them.
+    context.sessionManager.getQueue().clearQueue(sessionKey);
+    const cancelledStale = cancelAllPendingQueueItems(sessionKey);
+
+    logger.info(
+      `Auto-archive: ${fresh.id} → ${newSession.id} (${reparentedChildren} re-parented, ${cancelledStale} stale queue items cancelled)`,
+    );
+    context.emit("session:archived", {
+      sessionId: fresh.id,
+      successorId: newSession.id,
+      reparentedChildren,
+      auto: true,
+    });
+    context.emit("session:created", { sessionId: newSession.id });
+    context.emit("queue:updated", { sessionKey });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`Auto-archive failed for ${session.id}: ${msg}`);
+  }
+}
+
 function dispatchWebSessionRun(
   session: Session,
   prompt: string,
@@ -174,6 +272,11 @@ function dispatchWebSessionRun(
     await context.sessionManager.getQueue().enqueue(session.sessionKey || session.sourceRef, async () => {
       context.emit("session:started", { sessionId: session.id });
       await runWebSession(session, prompt, engine, config, context, opts?.attachments);
+      // Between-turn auto-archive: when the session has crossed its threshold
+      // and we're the last queued turn, summarize + archive + re-parent before
+      // the next message lands. Best-effort — any failure is logged and the
+      // session keeps running.
+      await maybeAutoArchive(session, engine, config, context);
     }, opts?.queueItemId);
   };
 
@@ -405,7 +508,8 @@ function serializeSession(session: Session, context: ApiContext): Session {
   let messageCount: number | undefined;
   if (session.status !== "archived" && !session.autoSplitDisabled) {
     messageCount = countMessages(session.id);
-    const result = isAutoSplitDue({ session, messageCount, config: context.getConfig() });
+    const employee = session.employee ? context.getEmployeeRegistry?.().get(session.employee) : undefined;
+    const result = isAutoSplitDue({ session, messageCount, config: context.getConfig(), employee });
     autoSplitDue = result.due;
     autoSplitTrigger = result.trigger;
     autoSplitTokensEstimate = result.tokensEstimate;

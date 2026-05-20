@@ -4,8 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, test, expect } from "vitest";
 import Database from "better-sqlite3";
 import { migrateSessionsSchema } from "../registry.js";
-import { getTranscriptByteEstimate, isAutoSplitDue } from "../archive.js";
-import type { Session } from "../../shared/types.js";
+import { getTranscriptByteEstimate, isAutoSplitDue, resolveAutoSplitConfig } from "../archive.js";
+import type { Employee, Session } from "../../shared/types.js";
 
 /**
  * Smoke tests for the auto-split archive workflow. These exercise the
@@ -177,6 +177,106 @@ describe("isAutoSplitDue", () => {
         config: { sessions: { autoSplit: { triggerMessages: 75 } } } as any,
       }),
     ).toEqual({ due: true, trigger: "messages" });
+  });
+
+  test("rank=executive uses built-in lower threshold of 60", () => {
+    const exec: Employee = {
+      name: "sasha", displayName: "Sasha", department: "ops", rank: "executive",
+      engine: "claude", model: "sonnet", persona: "",
+    };
+    // At 60 messages an executive should be due; an unranked (employee-rank) session
+    // sitting at 60 should not (default 100 applies).
+    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 60, employee: exec })).toEqual({ due: true, trigger: "messages" });
+    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 60 })).toEqual({ due: false });
+  });
+
+  test("rank=senior uses built-in threshold of 80", () => {
+    const sen: Employee = {
+      name: "vera", displayName: "Vera", department: "qa", rank: "senior",
+      engine: "claude", model: "sonnet", persona: "",
+    };
+    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 80, employee: sen })).toEqual({ due: true, trigger: "messages" });
+    expect(isAutoSplitDue({ session: fakeSession(), messageCount: 79, employee: sen })).toEqual({ due: false });
+  });
+
+  test("per-rank operator override beats built-in rank default", () => {
+    const exec: Employee = {
+      name: "sasha", displayName: "Sasha", department: "ops", rank: "executive",
+      engine: "claude", model: "sonnet", persona: "",
+    };
+    // Operator dialed exec back up to 150 — should not fire at 60.
+    expect(
+      isAutoSplitDue({
+        session: fakeSession(),
+        messageCount: 60,
+        employee: exec,
+        config: { sessions: { autoSplit: { perRank: { executive: { triggerMessages: 150 } } } } } as any,
+      }),
+    ).toEqual({ due: false });
+  });
+
+  test("per-rank operator override beats global config", () => {
+    const exec: Employee = {
+      name: "sasha", displayName: "Sasha", department: "ops", rank: "executive",
+      engine: "claude", model: "sonnet", persona: "",
+    };
+    // Global set to 200, per-rank override at 40 — exec at 40 should fire.
+    expect(
+      isAutoSplitDue({
+        session: fakeSession(),
+        messageCount: 40,
+        employee: exec,
+        config: { sessions: { autoSplit: { triggerMessages: 200, perRank: { executive: { triggerMessages: 40 } } } } } as any,
+      }),
+    ).toEqual({ due: true, trigger: "messages" });
+  });
+});
+
+describe("resolveAutoSplitConfig", () => {
+  test("returns AUTO_SPLIT_DEFAULTS when no config and no employee", () => {
+    const cfg = resolveAutoSplitConfig(undefined, undefined);
+    expect(cfg.triggerMessages).toBe(100);
+    expect(cfg.mode).toBe("prompt");
+  });
+
+  test("manager rank applies built-in 60-message default", () => {
+    const mgr: Employee = {
+      name: "aaron", displayName: "Aaron", department: "eng", rank: "manager",
+      engine: "claude", model: "sonnet", persona: "",
+    };
+    expect(resolveAutoSplitConfig(undefined, mgr).triggerMessages).toBe(60);
+  });
+
+  test("global config overrides built-in rank default", () => {
+    const mgr: Employee = {
+      name: "aaron", displayName: "Aaron", department: "eng", rank: "manager",
+      engine: "claude", model: "sonnet", persona: "",
+    };
+    const cfg = resolveAutoSplitConfig(
+      { sessions: { autoSplit: { triggerMessages: 200 } } } as any,
+      mgr,
+    );
+    expect(cfg.triggerMessages).toBe(200);
+  });
+
+  test("per-rank wins over global", () => {
+    const mgr: Employee = {
+      name: "aaron", displayName: "Aaron", department: "eng", rank: "manager",
+      engine: "claude", model: "sonnet", persona: "",
+    };
+    const cfg = resolveAutoSplitConfig(
+      { sessions: { autoSplit: { triggerMessages: 200, perRank: { manager: { triggerMessages: 50 } } } } } as any,
+      mgr,
+    );
+    expect(cfg.triggerMessages).toBe(50);
+  });
+
+  test("perRank table is not leaked onto the resolved config", () => {
+    const cfg = resolveAutoSplitConfig(
+      { sessions: { autoSplit: { perRank: { manager: { triggerMessages: 50 } } } } } as any,
+      undefined,
+    );
+    expect((cfg as any).perRank).toBeUndefined();
   });
 });
 

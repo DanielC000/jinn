@@ -21,7 +21,7 @@ import {
 import { buildContext, buildMinimalContext } from "./context.js";
 import { withSummaryPrompt } from "./archive.js";
 import { notifyParentSession } from "./callbacks.js";
-import { SessionQueue } from "./queue.js";
+import { SessionQueue, type QueueChangeNotifier } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
@@ -142,6 +142,10 @@ export class SessionManager {
 
   getQueue(): SessionQueue {
     return this.queue;
+  }
+
+  setQueueChangeNotifier(fn: QueueChangeNotifier | null): void {
+    this.queue.setOnChange(fn);
   }
 
   async route(msg: IncomingMessage, connector: Connector, opts: RouteOptions = {}): Promise<{ sessionId: string } | void> {

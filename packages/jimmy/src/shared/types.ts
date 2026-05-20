@@ -453,6 +453,26 @@ export interface JinnConfig {
       mode?: "prompt" | "silent" | "disabled";
       /** Model used for the summarization pass. Default: "sonnet". */
       summarizerModel?: string;
+      /**
+       * Per-rank threshold overrides. High-volume roles (executives, managers)
+       * accumulate messages much faster than ICs because they receive
+       * notification-style replies from their direct reports. Set lower triggers
+       * here so their chats archive sooner.
+       *
+       * Built-in defaults (applied when a rank entry is omitted):
+       *   executive → triggerMessages: 60
+       *   manager   → triggerMessages: 60
+       *   senior    → triggerMessages: 80
+       *   employee  → (uses global triggerMessages)
+       *
+       * Resolution order: per-rank override → global → AUTO_SPLIT_DEFAULTS.
+       */
+      perRank?: {
+        executive?: { triggerMessages?: number; triggerTokensEstimate?: number };
+        manager?: { triggerMessages?: number; triggerTokensEstimate?: number };
+        senior?: { triggerMessages?: number; triggerTokensEstimate?: number };
+        employee?: { triggerMessages?: number; triggerTokensEstimate?: number };
+      };
     };
     /** What to do when Claude hits a usage/rate limit. Default: "wait" (no automatic engine switch). Set to "fallback" to opt in to switching to Codex while Claude resets. */
     rateLimitStrategy?: "wait" | "fallback";
