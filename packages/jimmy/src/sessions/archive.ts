@@ -21,16 +21,37 @@
 import fs from "node:fs";
 import path from "node:path";
 import { v4 as uuidv4 } from "uuid";
-import type { JinnConfig, Session } from "../shared/types.js";
+import type { Employee, JinnConfig, Session } from "../shared/types.js";
 import { initDb, getSession } from "./registry.js";
 import { logger } from "../shared/logger.js";
+
+/**
+ * Built-in per-rank threshold defaults. Execs/managers receive a constant
+ * stream of notification-style replies from their reports, so their chats
+ * cross the message threshold much faster than ICs — fire archive earlier
+ * for them by default. Overridable via `config.sessions.autoSplit.perRank`.
+ */
+const RANK_DEFAULTS: Record<Employee["rank"], { triggerMessages?: number; triggerTokensEstimate?: number }> = {
+  executive: { triggerMessages: 60 },
+  manager: { triggerMessages: 60 },
+  senior: { triggerMessages: 80 },
+  employee: {}, // falls through to global
+};
 
 /** Defaults that match the design doc; overridable via config.sessions.autoSplit. */
 export const AUTO_SPLIT_DEFAULTS = {
   enabled: true,
   triggerMessages: 100,
   triggerTokensEstimate: 80_000,
-  mode: "prompt" as const,
+  /**
+   * mode:
+   *   - "prompt"   → UI banner offers the user to archive (current default)
+   *   - "silent"   → gateway archives between turns when due + queue idle
+   *   - "disabled" → never archive
+   *
+   * Name "silent" mirrors the long-reserved entry in JinnConfig.sessions.autoSplit.mode.
+   */
+  mode: "prompt" as "prompt" | "silent" | "disabled",
   summarizerModel: "sonnet" as const,
 };
 
@@ -112,9 +133,11 @@ export function isAutoSplitDue(opts: {
   session: Session;
   messageCount: number;
   config?: JinnConfig;
+  /** Employee record for the session's owner, if any — enables per-rank threshold overrides. */
+  employee?: Employee;
 }): AutoSplitDueResult {
-  const { session, messageCount, config } = opts;
-  const cfg = { ...AUTO_SPLIT_DEFAULTS, ...(config?.sessions?.autoSplit ?? {}) };
+  const { session, messageCount, config, employee } = opts;
+  const cfg = resolveAutoSplitConfig(config, employee);
   if (!cfg.enabled || cfg.mode === "disabled") return { due: false };
   if (session.status === "archived") return { due: false };
   if (session.autoSplitDisabled) return { due: false };
@@ -126,6 +149,39 @@ export function isAutoSplitDue(opts: {
     return { due: true, trigger: "bytes", tokensEstimate: Math.round(bytes / 4) };
   }
   return { due: false };
+}
+
+/**
+ * Resolve the effective auto-split config for an employee.
+ *
+ * Precedence (lowest → highest):
+ *   1. AUTO_SPLIT_DEFAULTS
+ *   2. RANK_DEFAULTS[employee.rank]   (built-in lower triggers for execs/managers/seniors)
+ *   3. config.sessions.autoSplit       (operator-set globals)
+ *   4. config.sessions.autoSplit.perRank[employee.rank]   (operator-set per-rank overrides)
+ *
+ * Operator config overrides built-in rank defaults so users can dial seniors
+ * back up if they want. Per-rank operator overrides win over global so a
+ * lower exec threshold doesn't get masked by a higher global one.
+ */
+export function resolveAutoSplitConfig(config: JinnConfig | undefined, employee: Employee | undefined): typeof AUTO_SPLIT_DEFAULTS {
+  const cfg = { ...AUTO_SPLIT_DEFAULTS };
+  if (employee) {
+    Object.assign(cfg, RANK_DEFAULTS[employee.rank]);
+  }
+  const globalCfg = config?.sessions?.autoSplit;
+  if (globalCfg) {
+    // Strip perRank out before merging — the table is handled separately so
+    // it doesn't end up on the resolved config.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { perRank, ...rest } = globalCfg;
+    Object.assign(cfg, rest);
+  }
+  if (employee) {
+    const rankOverride = globalCfg?.perRank?.[employee.rank];
+    if (rankOverride) Object.assign(cfg, rankOverride);
+  }
+  return cfg;
 }
 
 export interface ArchiveResult {

@@ -1,5 +1,7 @@
 import { markQueueItemRunning, markQueueItemCompleted } from "./registry.js";
 
+export type QueueChangeNotifier = (sessionKey: string) => void;
+
 export class SessionQueue {
   private queues = new Map<string, Promise<void>>();
   /** Track which sessions are currently running */
@@ -10,6 +12,29 @@ export class SessionQueue {
   private cancelled = new Set<string>();
   /** Track which session keys are paused - queued tasks wait until resumed. */
   private paused = new Set<string>();
+  /** Fires when a queued item transitions pending↔running or running→done so
+   *  the gateway can broadcast queue:updated. Without this, the chat UI keeps
+   *  showing items as "queued" after they've actually been consumed — most
+   *  visible for child-session notification messages, which arrive without a
+   *  user action that would otherwise trigger a refresh emit. */
+  private onChange: QueueChangeNotifier | null = null;
+
+  constructor(onChange?: QueueChangeNotifier) {
+    this.onChange = onChange ?? null;
+  }
+
+  setOnChange(fn: QueueChangeNotifier | null): void {
+    this.onChange = fn;
+  }
+
+  private notify(sessionKey: string): void {
+    if (!this.onChange) return;
+    try {
+      this.onChange(sessionKey);
+    } catch {
+      // Notification is best-effort — never let it break the queue.
+    }
+  }
 
   /**
    * Check if a session is currently running.
@@ -70,28 +95,37 @@ export class SessionQueue {
     const prev = this.queues.get(sessionKey) || Promise.resolve();
     const runTask = async () => {
       this.running.add(sessionKey);
+      let markedRunning = false;
       try {
         // Wait while paused (500ms poll)
         while (this.paused.has(sessionKey)) {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
-        if (queueItemId) markQueueItemRunning(queueItemId);
+        if (queueItemId) {
+          markQueueItemRunning(queueItemId);
+          markedRunning = true;
+        }
+        this.notify(sessionKey);
         if (!this.cancelled.has(sessionKey)) {
           await fn();
         }
-        if (queueItemId) markQueueItemCompleted(queueItemId);
       } finally {
+        // Always mark completed so an fn() throw can't leave the DB row stuck
+        // in 'running' — which getQueueItems would still surface to the UI as
+        // a stale queued/in-progress entry that never goes away.
+        if (queueItemId && markedRunning) markQueueItemCompleted(queueItemId);
         this.running.delete(sessionKey);
         this.decrementPending(sessionKey);
+        this.notify(sessionKey);
       }
     };
     const next = prev.then(runTask, runTask);
     this.queues.set(sessionKey, next);
-    void next.finally(() => {
+    next.finally(() => {
       if (this.queues.get(sessionKey) === next) {
         this.queues.delete(sessionKey);
       }
-    });
+    }).catch(() => { /* caller observes the rejection via the returned promise */ });
     return next;
   }
 

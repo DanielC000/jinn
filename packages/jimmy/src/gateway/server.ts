@@ -687,8 +687,18 @@ export async function startGateway(
     reloadConnectorInstances,
     hookRegistry,
     hookSecret: gatewayInfo.secret,
+    // Use a getter so onOrgChange reassignments are visible to callers.
+    getEmployeeRegistry: () => employeeRegistry,
     interactiveClaudeEngine,
   };
+
+  // Bridge SessionQueue lifecycle transitions to the WS bus so the chat
+  // queue panel refreshes when items are naturally consumed (not just on
+  // user mutations). Without this, child-session notification messages
+  // and other auto-enqueued items appear stuck in the UI.
+  sessionManager.setQueueChangeNotifier((sessionKey) => {
+    emit("queue:updated", { sessionKey });
+  });
 
   // Replay any pending web queue items (e.g. gateway restart mid-run)
   resumePendingWebQueueItems(apiContext);
