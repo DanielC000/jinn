@@ -176,26 +176,31 @@ When delegating a task with multiple independent phases or sub-tasks to an emplo
 }
 ```
 
-### Child Session Protocol (Async Notifications)
+### Child Session Protocol (Callbacks + Poll Fallback)
+
+When a child session replies, the gateway wakes you by injecting a
+notification message into your session — so you can end your turn and be
+called back. But callbacks are best-effort, not guaranteed: if a turn ever
+ends without one, **poll** rather than waiting forever.
 
 When you delegate to an employee via a child session:
 
 1. **Spawn** the child session (`POST /api/sessions` with `parentSessionId`)
 2. **Tell the user** what you delegated and to whom
-3. **End your turn.** Do NOT poll, wait, sleep, or block.
-4. The gateway automatically notifies you when the employee replies.
-   You will receive a notification message like:
+3. **End your turn.** The gateway will wake you when the employee replies —
+   you'll receive a message like:
    > 📩 Employee "name" replied in session {id}.
    > Read the latest messages: GET /api/sessions/{id}?last=N
-5. When notified, **read only the latest messages** via the API (use `?last=N`
-   to avoid context pollution). Then decide:
+4. **Fallback — don't wait forever.** If you resume and a child you're
+   waiting on hasn't reported, poll `GET /api/sessions/{id}?last=N` (check
+   `status` is `idle`) at the start of your next turn rather than stalling.
+5. When you do hear back, **read only the latest messages** (`?last=N`) to
+   avoid context pollution — never the full history. Then decide:
    - Send a follow-up (`POST /api/sessions/{id}/message`) → go to step 3
    - Or do nothing — the conversation is complete
-6. **Never read the full conversation history** on every notification. Only read
-   the latest messages relevant to the current round.
 
-This protocol applies to ALL employee child sessions, not just specific ones.
-The gateway handles the notification plumbing — you just reply and stop.
+This protocol applies to ALL employee child sessions. The gateway pushes the
+callback; you keep a poll fallback so a missed callback never leaves you idle.
 
 ---
 

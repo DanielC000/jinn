@@ -676,7 +676,7 @@ curl -s -X POST ${gatewayUrl}/api/sessions/<child-id>/message \\
   -d '{"message": "<follow-up>"}'
 \`\`\`
 
-6. **Follow up via GET**: After spawning, you can check on the child session at any time via \`GET /api/sessions/:id\` to read the latest assistant messages. The gateway does NOT push notifications back to you, so poll when needed (e.g. next turn).
+6. **Follow up via GET**: When a child replies, the gateway wakes you with a notification message, so you can end your turn and be called back. Callbacks are best-effort though — if you resume and a child you're waiting on hasn't reported, poll \`GET /api/sessions/:id?last=N\` (check \`status\` is \`idle\`) rather than stalling. Read only the latest messages to avoid context pollution.
 
 ### Key rules
 - **Always reuse** child sessions — never create duplicates for the same employee.

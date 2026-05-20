@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.13.2] - 2026-05-20
+
+### 🪄 Docs
+- **Align delegation guidance with restored callbacks** — the `template/CLAUDE.md`, `template/AGENTS.md`, and the runtime-injected delegation protocol (`context.ts`) disagreed about whether the gateway notifies a parent session: the templates still said "auto-notify, never poll" while `context.ts` (post-nuke) said "no callback, poll." Now that v0.13.1 restored the callback, all three describe the same **hybrid** model: the gateway wakes you on a child reply, with polling as a fallback so a missed callback never leaves a parent idle.
+
 ## [0.13.1] - 2026-05-20
 
 ### 🐛 Fixes
