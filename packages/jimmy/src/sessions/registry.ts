@@ -47,6 +47,16 @@ const CREATE_SESSION_KEY_INDEX = `
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key ON sessions (session_key, last_activity)
 `;
 
+// Backs `ORDER BY last_activity DESC` in the session list (was a full scan + sort).
+const CREATE_LAST_ACTIVITY_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions (last_activity DESC)
+`;
+
+// Backs the children lookup (was a full-table deserialization + JS filter).
+const CREATE_PARENT_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions (parent_session_id)
+`;
+
 const CREATE_FILES_TABLE = `
 CREATE TABLE IF NOT EXISTS files (
   id TEXT PRIMARY KEY,
@@ -95,6 +105,11 @@ function rowToSession(row: Record<string, unknown>): Session {
     createdAt: row.created_at as string,
     lastActivity: row.last_activity as string,
     lastError: (row.last_error as string) ?? null,
+    archivedAt: (row.archived_at as string) ?? null,
+    archivedTo: (row.archived_to as string) ?? null,
+    archivedFrom: (row.archived_from as string) ?? null,
+    summaryPrompt: (row.summary_prompt as string) ?? null,
+    autoSplitDisabled: ((row.auto_split_disabled as number) ?? 0) === 1,
   };
 }
 
@@ -108,6 +123,8 @@ export function initDb(): Database.Database {
   db.exec(CREATE_MESSAGES_INDEX);
   migrateSessionsSchema(db);
   db.exec(CREATE_SESSION_KEY_INDEX);
+  db.exec(CREATE_LAST_ACTIVITY_INDEX);
+  db.exec(CREATE_PARENT_INDEX);
   db.exec(`
     CREATE TABLE IF NOT EXISTS queue_items (
       id TEXT PRIMARY KEY,
@@ -142,6 +159,12 @@ export function migrateSessionsSchema(database: Database.Database): void {
     ['total_cost', 'REAL', '0'],
     ['total_turns', 'INTEGER', '0'],
     ['effort_level', 'TEXT'],
+    // Auto-split mega-chats (Phase 1):
+    ['archived_at', 'TEXT'],
+    ['archived_to', 'TEXT'],
+    ['archived_from', 'TEXT'],
+    ['summary_prompt', 'TEXT'],
+    ['auto_split_disabled', 'INTEGER', '0'],
   ];
 
   for (const [name, type, defaultVal] of missingColumns) {
@@ -250,6 +273,11 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     createdAt: now,
     lastActivity: now,
     lastError: null,
+    archivedAt: null,
+    archivedTo: null,
+    archivedFrom: null,
+    summaryPrompt: null,
+    autoSplitDisabled: false,
   };
 }
 
@@ -280,6 +308,12 @@ export interface UpdateSessionFields {
   lastActivity?: string;
   lastError?: string | null;
   title?: string;
+  // Auto-split mega-chats (Phase 1):
+  archivedAt?: string | null;
+  archivedTo?: string | null;
+  archivedFrom?: string | null;
+  summaryPrompt?: string | null;
+  autoSplitDisabled?: boolean;
 }
 
 export function updateSession(id: string, updates: UpdateSessionFields): Session | undefined {
@@ -327,6 +361,26 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
     sets.push('title = ?');
     values.push(updates.title);
   }
+  if (updates.archivedAt !== undefined) {
+    sets.push('archived_at = ?');
+    values.push(updates.archivedAt);
+  }
+  if (updates.archivedTo !== undefined) {
+    sets.push('archived_to = ?');
+    values.push(updates.archivedTo);
+  }
+  if (updates.archivedFrom !== undefined) {
+    sets.push('archived_from = ?');
+    values.push(updates.archivedFrom);
+  }
+  if (updates.summaryPrompt !== undefined) {
+    sets.push('summary_prompt = ?');
+    values.push(updates.summaryPrompt);
+  }
+  if (updates.autoSplitDisabled !== undefined) {
+    sets.push('auto_split_disabled = ?');
+    values.push(updates.autoSplitDisabled ? 1 : 0);
+  }
 
   if (sets.length === 0) return getSession(id);
 
@@ -362,6 +416,86 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = db.prepare(`SELECT * FROM sessions ${where} ORDER BY last_activity DESC`).all(...values) as Record<string, unknown>[];
   return rows.map(rowToSession);
+}
+
+// Sidebar groups sessions into cron, "direct" (no employee), and per-employee
+// buckets. These sentinels mirror that grouping so the server can paginate and
+// count per group without the client having to load every row. Keep this SQL in
+// sync with isCronSession/isDirectSession in the web chat-sidebar.
+export const CRON_GROUP = '__cron__';
+export const DIRECT_GROUP = '__direct__';
+const IS_CRON_SQL = `(source = 'cron' OR source_ref LIKE 'cron:%')`;
+const GROUP_KEY_SQL = `CASE
+  WHEN ${IS_CRON_SQL} THEN '${CRON_GROUP}'
+  WHEN employee IS NULL OR employee = '' THEN '${DIRECT_GROUP}'
+  ELSE employee
+END`;
+
+function groupFilter(group: string): { clause: string; params: unknown[] } {
+  if (group === CRON_GROUP) return { clause: IS_CRON_SQL, params: [] };
+  if (group === DIRECT_GROUP)
+    return { clause: `NOT ${IS_CRON_SQL} AND (employee IS NULL OR employee = '')`, params: [] };
+  return { clause: `NOT ${IS_CRON_SQL} AND employee = ?`, params: [group] };
+}
+
+/** Most-recent `perGroup` sessions for each group — the bounded default payload. */
+export function listRecentPerGroup(perGroup: number): Session[] {
+  const db = initDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM (
+         SELECT *, ROW_NUMBER() OVER (PARTITION BY ${GROUP_KEY_SQL} ORDER BY last_activity DESC) AS __rn
+         FROM sessions
+       ) WHERE __rn <= ? ORDER BY last_activity DESC`,
+    )
+    .all(perGroup) as Record<string, unknown>[];
+  return rows.map(rowToSession);
+}
+
+/** One group's sessions, newest first — used by the sidebar "load more" button. */
+export function listSessionsForGroup(group: string, limit: number, offset: number): Session[] {
+  const db = initDb();
+  const { clause, params } = groupFilter(group);
+  const rows = db
+    .prepare(
+      `SELECT * FROM sessions WHERE ${clause} ORDER BY last_activity DESC LIMIT ? OFFSET ?`,
+    )
+    .all(...params, limit, offset) as Record<string, unknown>[];
+  return rows.map(rowToSession);
+}
+
+/** Search across ALL sessions by title / employee / id (newest first, bounded). */
+export function searchSessions(query: string, limit = 100): Session[] {
+  const db = initDb();
+  const like = `%${query.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+  const rows = db
+    .prepare(
+      `SELECT * FROM sessions
+       WHERE title LIKE ? ESCAPE '\\' OR employee LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\'
+       ORDER BY last_activity DESC LIMIT ?`,
+    )
+    .all(like, like, like, limit) as Record<string, unknown>[];
+  return rows.map(rowToSession);
+}
+
+/** Child sessions of a parent — backed by idx_sessions_parent. */
+export function listChildSessions(parentSessionId: string): Session[] {
+  const db = initDb();
+  const rows = db
+    .prepare(`SELECT * FROM sessions WHERE parent_session_id = ? ORDER BY last_activity DESC`)
+    .all(parentSessionId) as Record<string, unknown>[];
+  return rows.map(rowToSession);
+}
+
+/** Total session count per group, so the UI can show accurate "+N more". */
+export function getSessionGroupCounts(): Record<string, number> {
+  const db = initDb();
+  const rows = db
+    .prepare(`SELECT ${GROUP_KEY_SQL} AS grp, COUNT(*) AS n FROM sessions GROUP BY grp`)
+    .all() as Array<{ grp: string; n: number }>;
+  const out: Record<string, number> = {};
+  for (const r of rows) out[r.grp] = r.n;
+  return out;
 }
 
 /**
@@ -495,6 +629,16 @@ export function insertMessage(sessionId: string, role: string, content: string):
 export function getMessages(sessionId: string): SessionMessage[] {
   const db = initDb();
   return db.prepare('SELECT id, role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC').all(sessionId) as SessionMessage[];
+}
+
+/**
+ * Cheap COUNT for the messages of a session — used by the auto-split trigger
+ * which is evaluated on every session API read.
+ */
+export function countMessages(sessionId: string): number {
+  const db = initDb();
+  const row = db.prepare('SELECT COUNT(*) AS n FROM messages WHERE session_id = ?').get(sessionId) as { n: number };
+  return row.n;
 }
 
 export interface QueueItem {
