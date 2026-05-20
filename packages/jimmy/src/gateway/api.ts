@@ -832,6 +832,12 @@ export async function handleApiRequest(
       // Allow internal callers (e.g. child session callbacks) to specify a non-user role
       const messageRole: string = body.role === "notification" ? "notification" : "user";
       const isNotification = messageRole === "notification";
+      // Dual audience: the engine (e.g. the COO) runs on the full `prompt`, while the
+      // web UI persists + shows a clean `displayMessage` banner. Falls back to `prompt`.
+      const displayMessage: string =
+        typeof body.displayMessage === "string" && body.displayMessage.trim()
+          ? body.displayMessage
+          : prompt;
 
       const config = context.getConfig();
       // CLI-mode sends route to the interactive PTY engine so the user sees their
@@ -843,8 +849,14 @@ export async function handleApiRequest(
         : context.sessionManager.getEngine(session.engine);
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
 
-      // Persist the message immediately
-      insertMessage(session.id, messageRole, prompt);
+      // Persist the message immediately. For notifications, store the clean
+      // human-facing `displayMessage` (what the UI banner renders) — the engine
+      // still runs on the full `prompt` via the dispatch below.
+      insertMessage(session.id, messageRole, isNotification ? displayMessage : prompt);
+      // Push the banner live to any connected web client viewing the parent.
+      if (isNotification) {
+        context.emit("session:notification", { sessionId: session.id, message: displayMessage });
+      }
       // Note: notification-role messages (e.g. child session callbacks) fall
       // through to enqueue + dispatch so the engine (e.g. the COO) actually
       // processes the notification and can respond — they do not return early.
@@ -857,6 +869,7 @@ export async function handleApiRequest(
         const queuedText =
           `⏳ Still paused due to Claude usage limit${resumeText ? ` (resets ${resumeText})` : ""}. Your message is queued and will run automatically.`;
         insertMessage(session.id, "notification", queuedText);
+        context.emit("session:notification", { sessionId: session.id, message: queuedText });
       }
 
       // If a turn is already running, check whether we should interrupt or queue.
