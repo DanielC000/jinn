@@ -20,6 +20,7 @@ import {
 } from "./registry.js";
 import { buildContext, buildMinimalContext } from "./context.js";
 import { withSummaryPrompt } from "./archive.js";
+import { notifyParentSession } from "./callbacks.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
@@ -582,7 +583,7 @@ export class SessionManager {
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});
       }
-      updateSession(session.id, {
+      const updatedSession = updateSession(session.id, {
         ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
         status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
         replyContext: msg.replyContext,
@@ -598,6 +599,17 @@ export class SessionManager {
         lastError: wasInterrupted ? null : (result.error ?? null),
       });
 
+      // Fork-local: if this is a child session, notify the parent so it picks up
+      // the report and chains the next step. Upstream removed this in 24ab541; see
+      // callbacks.ts for the why. Skip on user-initiated interrupt — the parent
+      // wasn't waiting for a report it never got.
+      if (updatedSession && !wasInterrupted) {
+        notifyParentSession(updatedSession, {
+          result: result.result,
+          error: result.error ?? null,
+        });
+      }
+
       logger.info(
         `Session ${session.id} completed in ${result.durationMs ?? 0}ms` +
         (result.cost ? ` ($${result.cost.toFixed(4)})` : ""),
@@ -606,11 +618,17 @@ export class SessionManager {
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.error(`Session ${session.id} error: ${errMsg}`);
 
-      updateSession(session.id, {
+      const erroredSession = updateSession(session.id, {
         status: "error",
         lastActivity: new Date().toISOString(),
         lastError: errMsg,
       });
+
+      // Fork-local: surface the failure to the parent too — silent child errors
+      // were the worst part of the 29-hour Fire Studio stall on 2026-05-19.
+      if (erroredSession) {
+        notifyParentSession(erroredSession, { error: errMsg });
+      }
 
       // Clear typing indicator on error
       if (decorateMessages && connector.setTypingStatus) {

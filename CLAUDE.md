@@ -59,8 +59,8 @@ The daemon is the single process that owns all state. Key files:
 - `registry.ts` — Synchronous SQLite wrapper (better-sqlite3). Tables: `sessions`, `messages`, `files`
 - `context.ts` — Builds system prompt for a session (employee persona + org hierarchy)
 - `queue.ts` — Per-session queue; default concurrency = 1 (sequential turns)
-- `fork.ts` — Spawns a child session when delegating to an employee
-- `callbacks.ts` — Notifies parent session or connector when a forked session completes
+- `fork.ts` — UI "Duplicate session" feature (Claude `--fork-session`, copies Codex/Gemini transcripts). Unrelated to parent/child delegation despite the name.
+- `callbacks.ts` — **Fork-local restoration.** Notifies the parent session when a child session completes so the parent picks up the report and chains next steps. Upstream commit `24ab541` ("nuke notifications", 2026-05-19) deleted this end-to-end; we restored a minimal version (web-only, no Slack/Telegram/Discord, no NotificationBell, no rate-limit callbacks, no `alwaysNotify`). **Do not delete on the next upstream sync** — upstream isn't bringing this back, and our autonomous delegation chain (Fire Studio, Scryloft) depends on it. The wire points are `manager.ts` session-completion + the success/error paths inside `runWebSession` in `gateway/api.ts`. Posts as `role: 'notification'` so the gateway queues behind a running parent turn instead of interrupting it.
 
 **Session key derivation**: `<connector>:<channel/chat_id>:<user_id>` — connector implementations must produce stable, unique keys per conversation thread.
 
