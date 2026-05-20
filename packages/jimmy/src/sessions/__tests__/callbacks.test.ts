@@ -1,44 +1,43 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import type { Session } from "../../shared/types.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// Mock dependencies before importing the module under test
 vi.mock("../registry.js", () => ({
   getSession: vi.fn(),
 }));
 
 vi.mock("../../shared/config.js", () => ({
-  loadConfig: vi.fn(() => ({ gateway: { port: 7777, host: "127.0.0.1" } })),
+  loadConfig: vi.fn(() => ({ gateway: { port: 7777 } })),
 }));
 
 vi.mock("../../shared/logger.js", () => ({
   logger: {
     warn: vi.fn(),
+    debug: vi.fn(),
     info: vi.fn(),
     error: vi.fn(),
-    debug: vi.fn(),
   },
 }));
 
 import { notifyParentSession } from "../callbacks.js";
 import { getSession } from "../registry.js";
+import type { Session } from "../../shared/types.js";
 
-const mockedGetSession = vi.mocked(getSession);
-
-function fakeSession(overrides: Partial<Session> = {}): Session {
+function makeSession(overrides: Partial<Session> = {}): Session {
   return {
-    id: "child-1",
+    id: "child-001",
     engine: "claude",
-    engineSessionId: "eng-child-1",
-    source: "web",
-    sourceRef: "web:child-1",
+    engineSessionId: null,
+    source: "api",
+    sourceRef: "api:test",
     connector: null,
-    sessionKey: "web:child-1",
+    sessionKey: "test-key",
     replyContext: null,
     messageId: null,
     transportMeta: null,
-    employee: "Kai",
-    model: null,
+    employee: "test-employee",
+    model: "opus",
     title: null,
-    parentSessionId: "parent-1",
+    parentSessionId: "parent-001",
     status: "idle",
     effortLevel: null,
     totalCost: 0,
@@ -46,128 +45,214 @@ function fakeSession(overrides: Partial<Session> = {}): Session {
     createdAt: new Date().toISOString(),
     lastActivity: new Date().toISOString(),
     lastError: null,
-    archivedAt: null,
-    archivedTo: null,
-    archivedFrom: null,
-    summaryPrompt: null,
-    autoSplitDisabled: false,
     ...overrides,
-  };
+  } as Session;
 }
 
-/**
- * Flushes microtasks so the fire-and-forget `_sendNotification().catch(...)`
- * chain has a chance to call `fetch` before assertions run.
- */
-async function flush(): Promise<void> {
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
-}
+const originalFetch = globalThis.fetch;
+
+describe("notifyParentSession — no parent", () => {
+  it("does nothing if child has no parentSessionId", async () => {
+    const spy = vi.fn().mockResolvedValue({ ok: true });
+    globalThis.fetch = spy as unknown as typeof fetch;
+
+    const child = makeSession({ parentSessionId: null });
+    notifyParentSession(child, { result: "done" });
+
+    await new Promise((r) => setTimeout(r, 150));
+    expect(spy).not.toHaveBeenCalled();
+
+    globalThis.fetch = originalFetch;
+  });
+});
 
 describe("notifyParentSession", () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
-    vi.stubGlobal("fetch", fetchSpy);
-    mockedGetSession.mockReset();
+    fetchSpy = vi.fn().mockResolvedValue({ ok: true });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle" }),
+    );
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    globalThis.fetch = originalFetch as typeof fetch;
   });
 
-  test("no-ops when child has no parent", async () => {
-    const child = fakeSession({ parentSessionId: null });
-    notifyParentSession(child, { result: "done" });
-    await flush();
-    expect(fetchSpy).not.toHaveBeenCalled();
-    expect(mockedGetSession).not.toHaveBeenCalled();
-  });
+  it("sends a full LLM message plus a clean display banner on success", async () => {
+    const child = makeSession();
 
-  test("skips when parent has been deleted", async () => {
-    mockedGetSession.mockReturnValue(undefined);
-    const child = fakeSession();
-    notifyParentSession(child, { result: "done" });
-    await flush();
-    expect(mockedGetSession).toHaveBeenCalledWith("parent-1");
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
+    notifyParentSession(child, { result: "Some result" });
+    await new Promise((r) => setTimeout(r, 50));
 
-  test("skips when parent is in error state (avoid feedback loop)", async () => {
-    mockedGetSession.mockReturnValue(fakeSession({ id: "parent-1", status: "error" }));
-    const child = fakeSession();
-    notifyParentSession(child, { result: "done" });
-    await flush();
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const [url, opts] = fetchSpy.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:7777/api/sessions/parent-001/message");
 
-  test("posts a success notification with employee name + child session ID + preview", async () => {
-    mockedGetSession.mockReturnValue(fakeSession({ id: "parent-1", status: "idle" }));
-    const child = fakeSession({
-      id: "94bb0c74",
-      employee: "Kai",
-      parentSessionId: "4ee1c7fb",
-    });
-    notifyParentSession(child, { result: "Dispatched 10 Longform pipelines. All green." });
-    await flush();
-
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe("http://127.0.0.1:7777/api/sessions/4ee1c7fb/message");
-    expect(init.method).toBe("POST");
-
-    const body = JSON.parse(init.body as string);
+    const body = JSON.parse(opts.body);
     expect(body.role).toBe("notification");
-    expect(body.message).toContain("📩");
-    expect(body.message).toContain('Employee "Kai"');
-    expect(body.message).toContain("session 94bb0c74");
-    expect(body.message).toContain("GET /api/sessions/94bb0c74?last=N");
-    expect(body.message).toContain("Dispatched 10 Longform pipelines. All green.");
+    // LLM-facing message: full context + API pointers for following up
+    expect(body.message).toContain("replied in child session child-001");
+    expect(body.message).toContain("GET /api/sessions/child-001?last=N");
+    expect(body.message).toContain("Some result");
+    // Human-facing banner: clean, no API noise
+    expect(body.displayMessage).toContain("test-employee replied");
+    expect(body.displayMessage).toContain("Some result");
+    expect(body.displayMessage).not.toContain("GET /api/sessions");
   });
 
-  test("truncates long previews to 200 chars + ellipsis", async () => {
-    mockedGetSession.mockReturnValue(fakeSession({ id: "parent-1", status: "idle" }));
-    const longReply = "x".repeat(500);
-    notifyParentSession(fakeSession(), { result: longReply });
-    await flush();
+  it("caps the LLM preview at 500 chars and keeps the display preview shorter", async () => {
+    const longResult = "x".repeat(600);
+    const child = makeSession();
 
-    const body = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
-    const preview = body.message.split("Preview: ")[1];
-    expect(preview).toBe("x".repeat(200) + "...");
+    notifyParentSession(child, { result: longResult });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    // LLM preview: 500 chars + ellipsis, never the 501st
+    expect(body.message).toContain("x".repeat(500) + "…");
+    expect(body.message).not.toContain("x".repeat(501));
+    // Display banner is a tighter, truncated version
+    expect(body.displayMessage.length).toBeLessThan(body.message.length);
+    expect(body.displayMessage).toContain("…");
   });
 
-  test("posts an error notification when the child errored out", async () => {
-    mockedGetSession.mockReturnValue(fakeSession({ id: "parent-1", status: "idle" }));
-    notifyParentSession(fakeSession({ employee: "Aaron" }), {
-      error: "engine crashed mid-turn",
-    });
-    await flush();
+  it("includes full preview for short results", async () => {
+    const shortResult = "Task done successfully";
+    const child = makeSession();
 
-    const body = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
-    expect(body.role).toBe("notification");
+    notifyParentSession(child, { result: shortResult });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain(shortResult);
+    expect(body.message).not.toContain("...");
+  });
+
+  it("error notifications contain the error message", async () => {
+    const child = makeSession();
+
+    notifyParentSession(child, { error: "Something broke" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain("Something broke");
     expect(body.message).toContain("⚠️");
-    expect(body.message).toContain('Employee "Aaron"');
-    expect(body.message).toContain("engine crashed mid-turn");
   });
 
-  test("falls back to 'Unknown' when child has no employee name", async () => {
-    mockedGetSession.mockReturnValue(fakeSession({ id: "parent-1", status: "idle" }));
-    notifyParentSession(fakeSession({ employee: null }), { result: "done" });
-    await flush();
+  it('sends with "notification" role', async () => {
+    const child = makeSession();
 
-    const body = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
-    expect(body.message).toContain('Employee "Unknown"');
+    notifyParentSession(child, { result: "done" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.role).toBe("notification");
   });
 
-  test("swallows fetch errors — never rethrows to caller", async () => {
-    mockedGetSession.mockReturnValue(fakeSession({ id: "parent-1", status: "idle" }));
-    fetchSpy.mockRejectedValue(new Error("ECONNREFUSED"));
+  it("skips when parent has been deleted", async () => {
+    vi.mocked(getSession).mockReturnValueOnce(undefined as unknown as Session);
+    const child = makeSession();
 
-    // No await, no try/catch — verify this doesn't throw or produce unhandled rejection.
-    expect(() => notifyParentSession(fakeSession(), { result: "done" })).not.toThrow();
-    await flush();
-    // Caller should not see the rejection.
-    expect(fetchSpy).toHaveBeenCalled();
+    notifyParentSession(child, { result: "done" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("skips when parent is in error state (avoid feedback loop)", async () => {
+    vi.mocked(getSession).mockReturnValueOnce(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "error" }),
+    );
+    const child = makeSession();
+
+    notifyParentSession(child, { result: "done" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to 'Unknown' when child has no employee name", async () => {
+    const child = makeSession({ employee: null });
+
+    notifyParentSession(child, { result: "done" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.message).toContain("Unknown");
+  });
+
+  it("swallows fetch errors — never rethrows to caller", async () => {
+    fetchSpy.mockRejectedValueOnce(new Error("network down"));
+    const child = makeSession();
+
+    // Synchronous call must not throw even though fetch will reject.
+    expect(() => notifyParentSession(child, { result: "done" })).not.toThrow();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+});
+
+describe("notifyParentSession — alwaysNotify suppression", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.fn().mockResolvedValue({ ok: true });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    vi.mocked(getSession).mockReturnValue(
+      makeSession({ id: "parent-001", parentSessionId: null, status: "idle" }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    globalThis.fetch = originalFetch as typeof fetch;
+  });
+
+  it("skips notification when alwaysNotify is false (success)", async () => {
+    const child = makeSession();
+
+    notifyParentSession(child, { result: "done" }, { alwaysNotify: false });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("skips notification when alwaysNotify is false (error)", async () => {
+    const child = makeSession();
+
+    notifyParentSession(child, { error: "Something broke" }, { alwaysNotify: false });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("sends notification when alwaysNotify is true", async () => {
+    const child = makeSession();
+
+    notifyParentSession(child, { result: "done" }, { alwaysNotify: true });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it("sends notification when options is undefined (backward compat)", async () => {
+    const child = makeSession();
+
+    notifyParentSession(child, { result: "done" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
   });
 });

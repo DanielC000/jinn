@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.3] - 2026-05-20
+
+### ✨ Features
+- **Child-reply notification banner is back in the web UI** — when an employee (child) session replies, the parent session's chat shows a centered system banner again (live via the `session:notification` WS event, and on history reload). It was removed by the v0.13.0 "nuke notifications" cleanup along with the bell.
+
+### 🪄 Polish
+- **Dual-audience callback messages** — the child-reply notification is now decoupled: the parent **engine** (e.g. the COO) receives a full-context message with the child session id and API pointers to follow up, while the **web UI** shows a clean, simplified banner (`📩 <employee> replied` + a tidy preview) instead of the old noisy `GET /api/sessions/…?last=N` / `Preview:` blob. The gateway persists + emits the clean version for display and runs the engine on the full one.
+
+## [0.13.2] - 2026-05-20
+
+### 🪄 Docs
+- **Align delegation guidance with restored callbacks** — the `template/CLAUDE.md`, `template/AGENTS.md`, and the runtime-injected delegation protocol (`context.ts`) disagreed about whether the gateway notifies a parent session: the templates still said "auto-notify, never poll" while `context.ts` (post-nuke) said "no callback, poll." Now that v0.13.1 restored the callback, all three describe the same **hybrid** model: the gateway wakes you on a child reply, with polling as a fallback so a missed callback never leaves a parent idle.
+
+## [0.13.1] - 2026-05-20
+
+### 🐛 Fixes
+- **Restore parent-session callbacks** — the "nuke notifications" cleanup (v0.13.0) was meant to remove only the web notification bell, but it also stripped the backend mechanism that wakes a parent session when a child session replies. Child/employee sessions were finishing without ever notifying their parent/COO session, so delegated work returned silently and had to be polled for manually. Restores `notifyParentSession` and the `role:"notification"` message path (including the "don't interrupt a running parent turn" guard), `Employee.alwaysNotify`, `JinnConfig.notifications`, and the `PATCH /api/org/employees/:name` endpoint. The web bell UI stays removed.
+
 ## [0.11.0] - 2026-05-18
 
 ### ✨ Features

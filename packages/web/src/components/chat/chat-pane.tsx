@@ -173,6 +173,21 @@ export function ChatPane({
         }
       }
 
+      if (event === 'session:notification') {
+        const notifMessage = String(p.message || '')
+        if (notifMessage) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: 'notification' as const,
+              content: notifMessage,
+              timestamp: Date.now(),
+            },
+          ])
+        }
+      }
+
       if (event === 'session:interrupted') {
         streamingTextRef.current = ''
         setStreamingText('')
@@ -251,7 +266,7 @@ export function ChatPane({
       const backendMessages: Message[] = Array.isArray(history)
         ? history.map((m: Record<string, unknown>) => ({
             id: crypto.randomUUID(),
-            role: (m.role as 'user' | 'assistant') || 'assistant',
+            role: (m.role as 'user' | 'assistant' | 'notification') || 'assistant',
             content: String(m.content || m.text || ''),
             timestamp: m.timestamp ? Number(m.timestamp) : Date.now(),
           }))
