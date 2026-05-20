@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.3] - 2026-05-20
+
+### ✨ Features
+- **Child-reply notification banner is back in the web UI** — when an employee (child) session replies, the parent session's chat shows a centered system banner again (live via the `session:notification` WS event, and on history reload). It was removed by the v0.13.0 "nuke notifications" cleanup along with the bell.
+
+### 🪄 Polish
+- **Dual-audience callback messages** — the child-reply notification is now decoupled: the parent **engine** (e.g. the COO) receives a full-context message with the child session id and API pointers to follow up, while the **web UI** shows a clean, simplified banner (`📩 <employee> replied` + a tidy preview) instead of the old noisy `GET /api/sessions/…?last=N` / `Preview:` blob. The gateway persists + emits the clean version for display and runs the engine on the full one.
+
 ## [0.13.2] - 2026-05-20
 
 ### 🪄 Docs

@@ -66,16 +66,36 @@ async function _sendNotification(
   const employeeName = childSession.employee || "Unknown";
   const childId = childSession.id;
 
+  // Dual audience: `message` is what the parent ENGINE (e.g. the COO) reads —
+  // it carries full context and the API hints it needs to follow up.
+  // `displayMessage` is the clean, human-facing version shown in the web UI
+  // notification banner.
   let message: string;
+  let displayMessage: string;
   if (result.error) {
-    message = `⚠️ Employee "${employeeName}" (session ${childId}) encountered an error: ${result.error}`;
+    message = `⚠️ Employee "${employeeName}" (child session ${childId}) hit an error and could not finish: ${result.error}`;
+    displayMessage = `⚠️ ${employeeName} couldn't finish`;
   } else {
-    const raw = result.result || "(no output)";
-    const preview = raw.length > 200 ? raw.substring(0, 200) + "..." : raw;
-    message = `📩 Employee "${employeeName}" replied in session ${childId}.\nRead the latest messages: GET /api/sessions/${childId}?last=N\n\nPreview: ${preview}`;
+    const raw = (result.result || "").trim() || "(no output)";
+    const llmPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
+    message =
+      `📩 Employee "${employeeName}" replied in child session ${childId}.\n\n` +
+      `Reply preview:\n${llmPreview}\n\n` +
+      `To read the full reply: GET /api/sessions/${childId}?last=N · ` +
+      `to follow up: POST /api/sessions/${childId}/message`;
+    displayMessage = `📩 ${employeeName} replied\n${_clean(raw, 220)}`;
   }
 
-  await _sendRaw(childSession.parentSessionId!, message);
+  await _sendRaw(childSession.parentSessionId!, message, displayMessage);
+}
+
+/** Trim to a word boundary for a tidy human-facing preview. */
+function _clean(text: string, max: number): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  if (oneLine.length <= max) return oneLine;
+  const cut = oneLine.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd() + "…";
 }
 
 /**
@@ -115,7 +135,11 @@ async function _sendDiscordNotification(message: string): Promise<void> {
   });
 }
 
-async function _sendRaw(parentSessionId: string, message: string): Promise<void> {
+async function _sendRaw(
+  parentSessionId: string,
+  message: string,
+  displayMessage?: string,
+): Promise<void> {
   let port = 7777;
   try {
     const config = loadConfig();
@@ -127,6 +151,10 @@ async function _sendRaw(parentSessionId: string, message: string): Promise<void>
   await fetch(`http://127.0.0.1:${port}/api/sessions/${parentSessionId}/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, role: "notification" }),
+    body: JSON.stringify({
+      message,
+      role: "notification",
+      ...(displayMessage ? { displayMessage } : {}),
+    }),
   });
 }

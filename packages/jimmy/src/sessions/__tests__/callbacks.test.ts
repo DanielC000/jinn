@@ -82,7 +82,7 @@ describe("notifyParentSession", () => {
     globalThis.fetch = originalFetch as typeof fetch;
   });
 
-  it('sends success notification saying "replied in session" with API pointer', async () => {
+  it("sends a full LLM message plus a clean display banner on success", async () => {
     const child = makeSession();
 
     notifyParentSession(child, { result: "Some result" });
@@ -93,13 +93,19 @@ describe("notifyParentSession", () => {
     expect(url).toBe("http://127.0.0.1:7777/api/sessions/parent-001/message");
 
     const body = JSON.parse(opts.body);
-    expect(body.message).toContain("replied in session");
+    expect(body.role).toBe("notification");
+    // LLM-facing message: full context + API pointers for following up
+    expect(body.message).toContain("replied in child session child-001");
     expect(body.message).toContain("GET /api/sessions/child-001?last=N");
-    expect(body.message).not.toContain("completed their task");
+    expect(body.message).toContain("Some result");
+    // Human-facing banner: clean, no API noise
+    expect(body.displayMessage).toContain("test-employee replied");
+    expect(body.displayMessage).toContain("Some result");
+    expect(body.displayMessage).not.toContain("GET /api/sessions");
   });
 
-  it("includes truncated 200-char preview for long results", async () => {
-    const longResult = "x".repeat(300);
+  it("caps the LLM preview at 500 chars and keeps the display preview shorter", async () => {
+    const longResult = "x".repeat(600);
     const child = makeSession();
 
     notifyParentSession(child, { result: longResult });
@@ -107,9 +113,12 @@ describe("notifyParentSession", () => {
 
     expect(fetchSpy).toHaveBeenCalledOnce();
     const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
-    // Should contain exactly 200 chars + "..."
-    expect(body.message).toContain("x".repeat(200) + "...");
-    expect(body.message).not.toContain("x".repeat(201));
+    // LLM preview: 500 chars + ellipsis, never the 501st
+    expect(body.message).toContain("x".repeat(500) + "…");
+    expect(body.message).not.toContain("x".repeat(501));
+    // Display banner is a tighter, truncated version
+    expect(body.displayMessage.length).toBeLessThan(body.message.length);
+    expect(body.displayMessage).toContain("…");
   });
 
   it("includes full preview for short results", async () => {
