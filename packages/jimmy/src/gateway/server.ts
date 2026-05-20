@@ -9,7 +9,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import type { JinnConfig, Connector, Employee } from "../shared/types.js";
 import { loadConfig, normalizeClaudeEngineConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
-import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession } from "../sessions/registry.js";
+import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession, markSessionsWithPendingQueueAsInterrupted } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { InteractiveClaudeEngine } from "../engines/claude-interactive.js";
@@ -690,8 +690,18 @@ export async function startGateway(
     interactiveClaudeEngine,
   };
 
-  // Replay any pending web queue items (e.g. gateway restart mid-run)
-  resumePendingWebQueueItems(apiContext);
+  // Replay any pending web queue items (e.g. gateway restart mid-run).
+  // Default is OFF — pending items stay resumable per-session via the chat
+  // resume-banner. Set sessions.autoResumeOnBoot=true to restore the
+  // pre-v0.13.4 thundering-herd behavior.
+  if (config.sessions?.autoResumeOnBoot) {
+    resumePendingWebQueueItems(apiContext);
+  } else {
+    const markedAsInterrupted = markSessionsWithPendingQueueAsInterrupted();
+    if (markedAsInterrupted > 0) {
+      logger.info(`Auto-resume disabled — marked ${markedAsInterrupted} session(s) with pending queue items as interrupted (banner will surface in UI)`);
+    }
+  }
 
   // Resolve web UI directory — bundled into dist/web/ by postbuild script
   // At runtime __dirname is dist/src/gateway/, so ../../web resolves to dist/web/

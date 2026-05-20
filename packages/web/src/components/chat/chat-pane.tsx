@@ -191,11 +191,22 @@ export function ChatPane({
       if (event === 'session:interrupted') {
         streamingTextRef.current = ''
         setStreamingText('')
+        // Surface the interrupted state immediately so the resume banner
+        // appears without waiting for the next /api/sessions/:id refresh.
+        setCurrentSession((prev) => prev ? { ...prev, status: 'interrupted' } : prev)
       }
 
       if (event === 'session:stopped') {
         setLoading(false)
         setStreamingText('')
+      }
+
+      if (event === 'session:resumed') {
+        // Banner clears optimistically; the server already flipped status
+        // away from 'interrupted'. Trigger a refresh so resumablePendingCount
+        // catches up to whatever was dispatched.
+        setCurrentSession((prev) => prev ? { ...prev, status: 'running', resumablePendingCount: 0 } : prev)
+        onRefresh?.()
       }
 
       if (event === 'session:completed') {
@@ -503,13 +514,53 @@ export function ChatPane({
   const [archiveError, setArchiveError] = useState<string | null>(null)
   const [autoSplitDismissed, setAutoSplitDismissed] = useState(false)
 
+  // Resume banner state (interrupted sessions — gateway restart or user-Stop)
+  const [resuming, setResuming] = useState(false)
+  const [discardingPending, setDiscardingPending] = useState(false)
+  const [resumeError, setResumeError] = useState<string | null>(null)
+
   // Reset the dismiss flag whenever the session changes — a new session that
   // crosses the threshold should re-show the banner.
   useEffect(() => {
     setAutoSplitDismissed(false)
     setArchiveError(null)
     setArchiving(false)
+    setResumeError(null)
+    setResuming(false)
+    setDiscardingPending(false)
   }, [sessionId])
+
+  const handleResumeSession = useCallback(async () => {
+    if (!sessionId) return
+    setResuming(true)
+    setResumeError(null)
+    try {
+      await api.resumeSession(sessionId)
+      // session:resumed WS event will refresh the state; also optimistically clear
+      setCurrentSession((prev) => prev ? { ...prev, status: 'running' } : prev)
+      onRefresh?.()
+    } catch (err) {
+      setResumeError(err instanceof Error ? err.message : 'Resume failed')
+    } finally {
+      setResuming(false)
+    }
+  }, [sessionId, onRefresh])
+
+  const handleDiscardPending = useCallback(async () => {
+    if (!sessionId) return
+    setDiscardingPending(true)
+    setResumeError(null)
+    try {
+      await api.clearSessionQueue(sessionId)
+      // Optimistic: drop pending count to 0 so the banner copy updates immediately.
+      setCurrentSession((prev) => prev ? { ...prev, resumablePendingCount: 0 } : prev)
+      onRefresh?.()
+    } catch (err) {
+      setResumeError(err instanceof Error ? err.message : 'Discard failed')
+    } finally {
+      setDiscardingPending(false)
+    }
+  }, [sessionId, onRefresh])
 
   const handleArchiveNow = useCallback(async () => {
     if (!sessionId) return
@@ -553,6 +604,26 @@ export function ChatPane({
       && !currentSession.autoSplitDisabled
       && !autoSplitDismissed
   )
+
+  // Resume banner: shown when this session was paused or restored-from-restart.
+  // Two scenarios converge on status='interrupted':
+  //   - gateway boot with autoResumeOnBoot=false marked sessions with pending
+  //     queue items as interrupted (markSessionsWithPendingQueueAsInterrupted)
+  //   - user clicked Stop (api.ts POST /api/sessions/:id/stop)
+  const resumablePending = typeof currentSession?.resumablePendingCount === 'number'
+    ? currentSession.resumablePendingCount as number
+    : 0
+  const showResumeBanner = !!(
+    sessionId
+      && currentSession
+      && currentSession.status === 'interrupted'
+  )
+  const resumeBannerCopy = (() => {
+    if (resumablePending > 0) {
+      return `Paused with ${resumablePending} message${resumablePending === 1 ? '' : 's'} queued.`
+    }
+    return 'This chat was paused.'
+  })()
   const autoSplitTrigger = currentSession?.autoSplitTrigger as 'messages' | 'bytes' | undefined
   const messageCountForBanner = typeof currentSession?.messageCount === 'number'
     ? currentSession.messageCount as number
@@ -707,6 +778,51 @@ export function ChatPane({
           {archiveError && (
             <div className="mt-2 text-xs text-[var(--system-red)]">
               {archiveError}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Resume banner — shown when the chat is in 'interrupted' status. Covers
+          both the gateway-restart case (sessions with pending queue items get
+          marked interrupted on boot when sessions.autoResumeOnBoot=false) and
+          the user-Stop case (POST /api/sessions/:id/stop marks interrupted). */}
+      {showResumeBanner && (
+        <div
+          className="border-b border-[var(--separator)] bg-[var(--material-thin)] px-4 py-2.5"
+          role="alert"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0 flex-1 text-sm text-foreground">
+              <span className="font-medium">{resumeBannerCopy}</span>{' '}
+              <span className="text-muted-foreground">
+                {resumablePending > 0
+                  ? 'Resume to dispatch the queued message(s), or discard them.'
+                  : 'Resume to continue from where this chat was interrupted.'}
+              </span>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                onClick={handleResumeSession}
+                disabled={resuming || discardingPending}
+                className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+              >
+                {resuming ? 'Resuming…' : 'Resume'}
+              </button>
+              {resumablePending > 0 && (
+                <button
+                  onClick={handleDiscardPending}
+                  disabled={resuming || discardingPending}
+                  className="rounded-md border border-[var(--separator)] px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
+                >
+                  {discardingPending ? 'Discarding…' : 'Discard pending'}
+                </button>
+              )}
+            </div>
+          </div>
+          {resumeError && (
+            <div className="mt-2 text-xs text-[var(--system-red)]">
+              {resumeError}
             </div>
           )}
         </div>

@@ -148,6 +148,8 @@ export const api = {
     post<Record<string, unknown>>(`/api/sessions/${id}/message`, data),
   stopSession: (id: string) =>
     post<{ status: string; sessionId: string }>(`/api/sessions/${id}/stop`, {}),
+  resumeSession: (id: string) =>
+    post<{ status: string; sessionId: string; dispatched: number }>(`/api/sessions/${id}/resume`, {}),
   resetSession: (id: string) =>
     post<{ status: string; sessionId: string }>(`/api/sessions/${id}/reset`, {}),
   getCronJobs: () => get<Record<string, unknown>[]>("/api/cron"),
