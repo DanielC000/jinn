@@ -36,7 +36,6 @@ import {
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { archiveSession, isAutoSplitDue, withSummaryPrompt, AUTO_SPLIT_DEFAULTS } from "../sessions/archive.js";
-import { notifyParentSession } from "../sessions/callbacks.js";
 import { summarizeSession } from "../sessions/summarize.js";
 import { loadTranscriptMessages } from "../sessions/transcript.js";
 import {
@@ -63,6 +62,7 @@ import { runCronJob } from "../cron/runner.js";
 import QRCode from "qrcode";
 import { WhatsAppConnector } from "../connectors/whatsapp/index.js";
 import { handleFilesRequest, ensureFilesDir } from "./files.js";
+import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "../sessions/callbacks.js";
 import { loadInstances } from "../cli/instances.js";
 import { handleHookPost, LOOPBACK as HOOK_LOOPBACK } from "./hook-endpoint.js";
 
@@ -930,13 +930,18 @@ export async function handleApiRequest(
       const prompt = body.message || body.prompt;
       if (!prompt) return badRequest(res, "message is required");
 
-      // Fork-local: child-session callbacks (callbacks.ts) post with role='notification'
-      // so the gateway renders the message as a system banner instead of a user bubble,
-      // AND so a running parent turn doesn't get interrupted when a sibling child
-      // finishes. See the `isNotification` branch below.
-      const messageRole: "user" | "notification" =
-        body.role === "notification" ? "notification" : "user";
+      // Child-session callbacks (callbacks.ts) post with role='notification' so
+      // the gateway renders the message as a system banner instead of a user
+      // bubble, AND so a running parent turn doesn't get interrupted when a
+      // sibling child finishes. See the `isNotification` branch below.
+      const messageRole: "user" | "notification" = body.role === "notification" ? "notification" : "user";
       const isNotification = messageRole === "notification";
+      // Dual audience: the engine (e.g. the COO) runs on the full `prompt`, while the
+      // web UI persists + shows a clean `displayMessage` banner. Falls back to `prompt`.
+      const displayMessage: string =
+        typeof body.displayMessage === "string" && body.displayMessage.trim()
+          ? body.displayMessage
+          : prompt;
 
       const config = context.getConfig();
       // CLI-mode sends route to the interactive PTY engine so the user sees their
@@ -948,10 +953,31 @@ export async function handleApiRequest(
         : context.sessionManager.getEngine(session.engine);
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
 
-      // Persist the message immediately
-      insertMessage(session.id, messageRole, prompt);
+      // Persist the message immediately. For notifications, store the clean
+      // human-facing `displayMessage` (what the UI banner renders) — the engine
+      // still runs on the full `prompt` via the dispatch below.
+      insertMessage(session.id, messageRole, isNotification ? displayMessage : prompt);
+      // Push the banner live to any connected web client viewing the parent.
+      if (isNotification) {
+        context.emit("session:notification", { sessionId: session.id, message: displayMessage });
+      }
+      // Note: notification-role messages (e.g. child session callbacks) fall
+      // through to enqueue + dispatch so the engine (e.g. the COO) actually
+      // processes the notification and can respond — they do not return early.
+
+      if (!isNotification && session.status === "waiting") {
+        const expectedResetAt = getClaudeExpectedResetAt();
+        const resumeText = expectedResetAt
+          ? expectedResetAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+          : null;
+        const queuedText =
+          `⏳ Still paused due to Claude usage limit${resumeText ? ` (resets ${resumeText})` : ""}. Your message is queued and will run automatically.`;
+        insertMessage(session.id, "notification", queuedText);
+        context.emit("session:notification", { sessionId: session.id, message: queuedText });
+      }
 
       // If a turn is already running, check whether we should interrupt or queue.
+      // Notifications (child completion callbacks) should never interrupt — just queue.
       if (session.status === "running") {
         // Only interrupt if a turn is actually in flight. With warm PTYs, isAlive is
         // also true for an idle-but-warm engine — isTurnRunning distinguishes them.
@@ -1161,6 +1187,21 @@ export async function handleApiRequest(
         depth: node?.depth ?? 0,
         chain: node?.chain ?? [params.name],
       });
+    }
+
+    // PATCH /api/org/employees/:name — update employee fields (currently only alwaysNotify)
+    params = matchRoute("/api/org/employees/:name", pathname);
+    if (method === "PATCH" && params) {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      const body = _parsed.body as any;
+      const { updateEmployeeYaml } = await import("./org.js");
+      const updated = updateEmployeeYaml(params.name, {
+        alwaysNotify: typeof body.alwaysNotify === "boolean" ? body.alwaysNotify : undefined,
+      });
+      if (!updated) return notFound(res);
+      context.emit("org:updated", { employee: params.name });
+      return json(res, { status: "ok" });
     }
 
     // GET /api/org/departments/:name/board
@@ -2058,6 +2099,13 @@ async function runWebSession(
             const resumeText = resumeAt
               ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
               : null;
+            const notificationText =
+              `⚠️ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""}. Switching to GPT for now.`;
+            insertMessage(currentSession.id, "notification", notificationText);
+
+            notifyDiscordChannel(
+              `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} switching to GPT.`,
+            );
           },
           onFallbackStream: emitDelta,
           onFallbackComplete: (fallbackResult) => {
@@ -2065,12 +2113,15 @@ async function runWebSession(
               insertMessage(currentSession.id, "assistant", fallbackResult.result);
             }
 
-            updateSession(currentSession.id, {
+            const completedFallback = updateSession(currentSession.id, {
               engineSessionId: fallbackResult.sessionId,
               status: fallbackResult.error ? "error" : "idle",
               lastActivity: new Date().toISOString(),
               lastError: fallbackResult.error ?? null,
             });
+            if (completedFallback) {
+              notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+            }
 
             context.emit("session:completed", {
               sessionId: currentSession.id,
@@ -2082,7 +2133,29 @@ async function runWebSession(
               durationMs: fallbackResult.durationMs,
             });
           },
-          onWaitingStart: () => {
+          onWaitingStart: ({ resumeAt }) => {
+            const resumeText = resumeAt
+              ? resumeAt.toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+              : null;
+
+            // Send hardcoded Discord notification — does not depend on the LLM
+            notifyDiscordChannel(
+              `⚠️ Claude usage limit reached. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} paused${resumeText ? ` until ${resumeText}` : ""}.`,
+            );
+
+            const notificationText =
+              `⏳ Claude usage limit reached${resumeText ? `. Resets ${resumeText}` : ""} — I'll continue automatically.`;
+            insertMessage(currentSession.id, "notification", notificationText);
+
+            // Notify parent session about rate limit (fire-and-forget)
+            const waitingSession = getSession(currentSession.id);
+            notifyRateLimited(
+              (waitingSession ?? { ...currentSession, status: "waiting" }) as Session,
+              resumeAt
+                ? resumeAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })
+                : undefined,
+            );
+
             context.emit("session:rate-limited", {
               sessionId: currentSession.id,
               employee: currentSession.employee,
@@ -2097,7 +2170,7 @@ async function runWebSession(
               insertMessage(currentSession.id, "assistant", retryResult.result);
             }
 
-            updateSession(currentSession.id, {
+            const completedAfterRetry = updateSession(currentSession.id, {
               ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
               ...(persistModel ? { model: resolvedModel } : {}),
               status: retryResult.error ? "error" : "idle",
@@ -2112,6 +2185,17 @@ async function runWebSession(
                 retryResult.numTurns ?? 1,
               );
             }
+            if (completedAfterRetry) {
+              notifyRateLimitResumed(completedAfterRetry);
+              notifyDiscordChannel(
+                `✅ Claude usage limit cleared. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} resumed.`,
+              );
+              notifyParentSession(
+                completedAfterRetry,
+                { result: retryResult.result, error: retryResult.error ?? null, cost: retryResult.cost, durationMs: retryResult.durationMs },
+                { alwaysNotify: employee?.alwaysNotify },
+              );
+            }
 
             context.emit("session:completed", {
               sessionId: currentSession.id,
@@ -2124,11 +2208,17 @@ async function runWebSession(
             });
           },
           onTimeout: () => {
-            updateSession(currentSession.id, {
+            notifyDiscordChannel(
+              `❌ Claude usage limit did not clear in time. Session ${currentSession.id}${currentSession.employee ? ` (${currentSession.employee})` : ""} has been stopped.`,
+            );
+            const erroredSession = updateSession(currentSession.id, {
               status: "error",
               lastActivity: new Date().toISOString(),
               lastError: "Claude usage limit did not clear in time",
             });
+            if (erroredSession) {
+              notifyParentSession(erroredSession, { error: "Claude usage limit did not clear in time" }, { alwaysNotify: employee?.alwaysNotify });
+            }
             context.emit("session:completed", {
               sessionId: currentSession.id,
               result: null,
@@ -2171,6 +2261,9 @@ async function runWebSession(
         updateSession(currentSession.id, { transportMeta: nextMeta as any });
       }
     }
+    if (completedSession) {
+      notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
+    }
 
     // Fork-local: if this is a child session, notify the parent so it picks up the
     // report and chains next steps. Upstream removed this in 24ab541 — see
@@ -2209,10 +2302,10 @@ async function runWebSession(
       lastActivity: new Date().toISOString(),
       lastError: errMsg,
     });
-    // Fork-local: surface the failure to the parent too — silent child errors
-    // were the worst part of the 29-hour Fire Studio stall on 2026-05-19.
+    // Surface the failure to the parent — silent child errors were the worst
+    // part of the 29-hour Fire Studio stall on 2026-05-19.
     if (erroredSession) {
-      notifyParentSession(erroredSession, { error: errMsg });
+      notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
     }
     context.emit("session:completed", {
       sessionId: currentSession.id,
