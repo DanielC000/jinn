@@ -2371,19 +2371,15 @@ async function runWebSession(
         updateSession(currentSession.id, { transportMeta: nextMeta as any });
       }
     }
-    if (completedSession) {
-      notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-    }
-
-    // Fork-local: if this is a child session, notify the parent so it picks up the
-    // report and chains next steps. Upstream removed this in 24ab541 — see
-    // sessions/callbacks.ts for the why. This is the load-bearing wire for web-spawned
-    // employees (POST /api/sessions creates source='web' children).
+    // Notify parent session on child completion. Mirrors the connector path
+    // in manager.ts:633-639: skip on user-initiated interrupt (the parent
+    // wasn't waiting for a partial report), respect employee.alwaysNotify.
     if (completedSession && !wasInterrupted) {
-      notifyParentSession(completedSession, {
-        result: result.result,
-        error: result.error ?? null,
-      });
+      notifyParentSession(
+        completedSession,
+        { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs },
+        { alwaysNotify: employee?.alwaysNotify },
+      );
     }
 
     context.emit("session:completed", {
