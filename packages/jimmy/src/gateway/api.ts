@@ -10,7 +10,14 @@ import type { SessionManager } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
   listSessions,
+  listRecentPerGroup,
+  listSessionsForGroup,
+  getSessionGroupCounts,
+  searchSessions,
+  listChildSessions,
   getSession,
+  accumulateSessionCost,
+  countMessages,
   createSession,
   updateSession,
   UpdateSessionFields,
@@ -28,6 +35,10 @@ import {
   initDb,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
+import { archiveSession, isAutoSplitDue, withSummaryPrompt, AUTO_SPLIT_DEFAULTS } from "../sessions/archive.js";
+import { notifyParentSession } from "../sessions/callbacks.js";
+import { summarizeSession } from "../sessions/summarize.js";
+import { loadTranscriptMessages } from "../sessions/transcript.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -45,6 +56,7 @@ import { resolveEffort } from "../shared/effort.js";
 import { detectRateLimit } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt } from "../shared/usageAwareness.js";
 import { handleRateLimit } from "../sessions/rate-limit-handler.js";
+import { pickEncoding, compressBuffer, MIN_COMPRESS_BYTES } from "./compress.js";
 import { loadJobs, saveJobs } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
@@ -277,9 +289,26 @@ function resolveAttachmentPaths(fileIds: unknown): string[] {
   return paths;
 }
 
+/** Per-request Accept-Encoding, stashed by handleApiRequest so json() can compress. */
+type ResWithEncoding = ServerResponse & { __acceptEncoding?: string };
+
 function json(res: ServerResponse, data: unknown, status = 200): void {
+  const body = Buffer.from(JSON.stringify(data));
+  const enc =
+    body.length >= MIN_COMPRESS_BYTES
+      ? pickEncoding((res as ResWithEncoding).__acceptEncoding)
+      : null;
+  if (enc) {
+    res.writeHead(status, {
+      "Content-Type": "application/json",
+      "Content-Encoding": enc,
+      Vary: "Accept-Encoding",
+    });
+    res.end(compressBuffer(enc, body));
+    return;
+  }
   res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(data));
+  res.end(body);
 }
 
 function notFound(res: ServerResponse): void {
@@ -367,10 +396,28 @@ function serializeSession(session: Session, context: ApiContext): Session {
   const queue = context.sessionManager.getQueue();
   const queueDepth = queue.getPendingCount(session.sessionKey || session.sourceRef);
   const transportState = queue.getTransportState(session.sessionKey || session.sourceRef, session.status);
+  // Auto-split due check: only compute for sessions that could plausibly hit
+  // the threshold — skip already-archived and opted-out ones to avoid the
+  // COUNT(*) on every list call.
+  let autoSplitDue: boolean | undefined;
+  let autoSplitTrigger: "messages" | "bytes" | undefined;
+  let autoSplitTokensEstimate: number | undefined;
+  let messageCount: number | undefined;
+  if (session.status !== "archived" && !session.autoSplitDisabled) {
+    messageCount = countMessages(session.id);
+    const result = isAutoSplitDue({ session, messageCount, config: context.getConfig() });
+    autoSplitDue = result.due;
+    autoSplitTrigger = result.trigger;
+    autoSplitTokensEstimate = result.tokensEstimate;
+  }
   return {
     ...session,
     queueDepth,
     transportState,
+    ...(autoSplitDue !== undefined ? { autoSplitDue } : {}),
+    ...(autoSplitTrigger !== undefined ? { autoSplitTrigger } : {}),
+    ...(autoSplitTokensEstimate !== undefined ? { autoSplitTokensEstimate } : {}),
+    ...(messageCount !== undefined ? { messageCount } : {}),
   };
 }
 
@@ -394,6 +441,8 @@ export async function handleApiRequest(
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = url.pathname;
   const method = req.method || "GET";
+  // Stash so json() can compress large responses without threading req everywhere.
+  (res as ResWithEncoding).__acceptEncoding = req.headers["accept-encoding"];
 
   try {
     // GET /api/status
@@ -435,9 +484,34 @@ export async function handleApiRequest(
     }
 
     // GET /api/sessions
+    //   ?group=<employee|__direct__|__cron__>&offset=M&limit=N → one group's page (sidebar "load more")
+    //   ?limit=0                                              → every session (power-user escape hatch)
+    //   (default)                                             → top PER_GROUP recent per group + counts
     if (method === "GET" && pathname === "/api/sessions") {
-      const sessions = listSessions();
-      return json(res, sessions.map((session) => serializeSession(session, context)));
+      const query = url.searchParams.get("q");
+      if (query && query.trim()) {
+        const matches = searchSessions(query.trim());
+        return json(res, matches.map((session) => serializeSession(session, context)));
+      }
+      const group = url.searchParams.get("group");
+      const rawLimit = url.searchParams.get("limit");
+      if (group) {
+        const limit = Math.max(1, parseInt(rawLimit || "50", 10) || 50);
+        const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0", 10) || 0);
+        const page = listSessionsForGroup(group, limit, offset);
+        return json(res, page.map((session) => serializeSession(session, context)));
+      }
+      if (rawLimit === "0") {
+        const all = listSessions();
+        return json(res, all.map((session) => serializeSession(session, context)));
+      }
+      const PER_GROUP = 8;
+      const sessions = listRecentPerGroup(PER_GROUP);
+      return json(res, {
+        sessions: sessions.map((session) => serializeSession(session, context)),
+        counts: getSessionGroupCounts(),
+        perGroup: PER_GROUP,
+      });
     }
 
     // GET /api/sessions/interrupted — list sessions that can be resumed after a restart
@@ -486,6 +560,10 @@ export async function handleApiRequest(
         const trimmed = body.title.trim();
         if (!trimmed) return badRequest(res, "title must not be empty");
         updates.title = trimmed.slice(0, 200);
+      }
+      if (body.autoSplitDisabled !== undefined) {
+        if (typeof body.autoSplitDisabled !== "boolean") return badRequest(res, "autoSplitDisabled must be a boolean");
+        updates.autoSplitDisabled = body.autoSplitDisabled;
       }
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
       const updated = updateSession(params.id, updates);
@@ -594,6 +672,80 @@ export async function handleApiRequest(
       }
     }
 
+    // POST /api/sessions/:id/archive — auto-split mega-chats workflow.
+    // Body (all optional):
+    //   { summary?: string,         // skip summarizer if provided (manual archive)
+    //     summarizerModel?: string  // override default (sonnet)
+    //   }
+    // Returns the new successor session (serialized).
+    params = matchRoute("/api/sessions/:id/archive", pathname);
+    if (method === "POST" && params) {
+      const source = getSession(params.id);
+      if (!source) return notFound(res);
+      if (source.status === "archived") {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Session is already archived", archivedTo: source.archivedTo }));
+        return;
+      }
+      if (source.autoSplitDisabled) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Auto-split is disabled for this session" }));
+        return;
+      }
+
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = (_parsed.body as any) ?? {};
+
+      try {
+        let summary: string;
+        if (typeof body.summary === "string" && body.summary.trim()) {
+          summary = body.summary.trim();
+          logger.info(`Archive: using caller-supplied summary for session ${source.id} (${summary.length} chars)`);
+        } else {
+          if (!source.engineSessionId) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Session has no engine_session_id — cannot auto-summarize; supply { summary } in the request body" }));
+            return;
+          }
+          const config = context.getConfig();
+          const summarizerModel = (typeof body.summarizerModel === "string" && body.summarizerModel)
+            || config.sessions?.autoSplit?.summarizerModel
+            || AUTO_SPLIT_DEFAULTS.summarizerModel;
+          const engineConfig = source.engine === "codex"
+            ? config.engines.codex
+            : source.engine === "gemini"
+              ? config.engines.gemini ?? config.engines.claude
+              : config.engines.claude;
+          const engine = context.sessionManager.getEngine(source.engine);
+          if (!engine) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: `No engine registered for "${source.engine}"` }));
+            return;
+          }
+          summary = await summarizeSession({
+            session: source,
+            engine,
+            bin: engineConfig.bin,
+            cwd: JINN_HOME,
+            model: summarizerModel,
+          });
+        }
+
+        const { newSession, reparentedChildren } = archiveSession(source.id, summary);
+        logger.info(`Archive endpoint: ${source.id} → ${newSession.id} (${reparentedChildren} children re-parented)`);
+        context.emit("session:archived", { sessionId: source.id, successorId: newSession.id, reparentedChildren });
+        context.emit("session:created", { sessionId: newSession.id });
+        return json(res, serializeSession(newSession, context));
+      } catch (err: any) {
+        logger.error(`Archive failed for ${source.id}: ${err.message}`);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Archive failed: ${err.message}` }));
+        return;
+      }
+    }
+
     // DELETE /api/sessions/:id/queue/:itemId — cancel specific item
     const queueItemParams = matchRoute("/api/sessions/:id/queue/:itemId", pathname);
     if (method === "DELETE" && queueItemParams) {
@@ -683,7 +835,7 @@ export async function handleApiRequest(
     // GET /api/sessions/:id/children
     params = matchRoute("/api/sessions/:id/children", pathname);
     if (method === "GET" && params) {
-      const children = listSessions().filter((s) => s.parentSessionId === params!.id);
+      const children = listChildSessions(params.id);
       return json(res, children.map((child) => serializeSession(child, context)));
     }
 
@@ -778,6 +930,14 @@ export async function handleApiRequest(
       const prompt = body.message || body.prompt;
       if (!prompt) return badRequest(res, "message is required");
 
+      // Fork-local: child-session callbacks (callbacks.ts) post with role='notification'
+      // so the gateway renders the message as a system banner instead of a user bubble,
+      // AND so a running parent turn doesn't get interrupted when a sibling child
+      // finishes. See the `isNotification` branch below.
+      const messageRole: "user" | "notification" =
+        body.role === "notification" ? "notification" : "user";
+      const isNotification = messageRole === "notification";
+
       const config = context.getConfig();
       // CLI-mode sends route to the interactive PTY engine so the user sees their
       // prompt injected + claude's response stream in the live xterm. All other
@@ -789,7 +949,7 @@ export async function handleApiRequest(
       if (!engine) return serverError(res, `Engine "${session.engine}" not available`);
 
       // Persist the message immediately
-      insertMessage(session.id, "user", prompt);
+      insertMessage(session.id, messageRole, prompt);
 
       // If a turn is already running, check whether we should interrupt or queue.
       if (session.status === "running") {
@@ -798,7 +958,10 @@ export async function handleApiRequest(
         // Headless engines lack isTurnRunning; their isAlive ≈ "turn running".
         const turnRunning = isInterruptibleEngine(engine)
           && ("isTurnRunning" in engine ? (engine as any).isTurnRunning(session.id) : engine.isAlive(session.id));
-        if ((config.sessions?.interruptOnNewMessage ?? true) && turnRunning) {
+        // Notifications (child-session completion callbacks) never interrupt — they
+        // queue behind the running parent turn so sequential multi-child reports
+        // don't kill the parent mid-processing of an earlier sibling's reply.
+        if (!isNotification && (config.sessions?.interruptOnNewMessage ?? true) && turnRunning) {
           logger.info(`Interrupting running session ${session.id} for new message`);
           engine.kill(session.id, "Interrupted: new message received");
           // SessionQueue serializes per-session; the new turn enqueued below will
@@ -1728,51 +1891,6 @@ function scheduleTranscriptBackfill(sessionId: string, engineSessionId: string, 
   });
 }
 
-function loadTranscriptMessages(engineSessionId: string): Array<{ role: string; content: string }> {
-  // Claude Code stores transcripts in ~/.claude/projects/<project-key>/<sessionId>.jsonl
-  const claudeProjectsDir = path.join(
-    process.env.HOME || process.env.USERPROFILE || "",
-    ".claude",
-    "projects",
-  );
-  if (!fs.existsSync(claudeProjectsDir)) return [];
-
-  // Search all project dirs for the transcript
-  const projectDirs = fs.readdirSync(claudeProjectsDir, { withFileTypes: true });
-  for (const dir of projectDirs) {
-    if (!dir.isDirectory()) continue;
-    const jsonlPath = path.join(claudeProjectsDir, dir.name, `${engineSessionId}.jsonl`);
-    if (!fs.existsSync(jsonlPath)) continue;
-
-    const messages: Array<{ role: string; content: string }> = [];
-    const lines = fs.readFileSync(jsonlPath, "utf-8").trim().split("\n").filter(Boolean);
-    for (const line of lines) {
-      try {
-        const obj = JSON.parse(line);
-        const type = obj.type;
-        if (type !== "user" && type !== "assistant") continue;
-        const msg = obj.message;
-        if (!msg) continue;
-
-        let content = msg.content;
-        if (Array.isArray(content)) {
-          content = content
-            .filter((b: Record<string, unknown>) => b.type === "text")
-            .map((b: Record<string, unknown>) => b.text)
-            .join("");
-        }
-        if (typeof content === "string" && content.trim()) {
-          messages.push({ role: type, content: content.trim() });
-        }
-      } catch {
-        continue;
-      }
-    }
-    return messages;
-  }
-  return [];
-}
-
 async function runWebSession(
   session: Session,
   prompt: string,
@@ -1829,6 +1947,11 @@ async function runWebSession(
         ? config.engines.gemini ?? config.engines.claude
         : config.engines.claude;
     const effortLevel = resolveEffort(engineConfig, currentSession, employee);
+    // Resolve the model up front so we can both pass it to the engine and
+    // persist it back to the session row on first completion (web sessions
+    // are created with model=null when the client doesn't pin one).
+    const resolvedModel = currentSession.model ?? engineConfig.model ?? null;
+    const persistModel = currentSession.model == null && resolvedModel != null;
 
     let lastHeartbeatAt = 0;
     const runHeartbeat = setInterval(() => {
@@ -1862,10 +1985,10 @@ async function runWebSession(
     const result = await engine.run({
       prompt: promptToRun,
       resumeSessionId: currentSession.engineSessionId ?? undefined,
-      systemPrompt,
+      systemPrompt: withSummaryPrompt(systemPrompt, currentSession),
       cwd: JINN_HOME,
       bin: engineConfig.bin,
-      model: currentSession.model ?? engineConfig.model,
+      model: resolvedModel ?? engineConfig.model,
       effortLevel,
       cliFlags: employee?.cliFlags,
       attachments: attachments?.length ? attachments : undefined,
@@ -1976,10 +2099,19 @@ async function runWebSession(
 
             updateSession(currentSession.id, {
               ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
+              ...(persistModel ? { model: resolvedModel } : {}),
               status: retryResult.error ? "error" : "idle",
               lastActivity: new Date().toISOString(),
               lastError: retryResult.error ?? null,
             });
+
+            if (retryResult.cost || retryResult.numTurns) {
+              accumulateSessionCost(
+                currentSession.id,
+                retryResult.cost ?? 0,
+                retryResult.numTurns ?? 1,
+              );
+            }
 
             context.emit("session:completed", {
               sessionId: currentSession.id,
@@ -2015,12 +2147,22 @@ async function runWebSession(
       insertMessage(currentSession.id, "assistant", result.result);
     }
 
-    updateSession(currentSession.id, {
+    const completedSession = updateSession(currentSession.id, {
       ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
+      ...(persistModel ? { model: resolvedModel } : {}),
       status: result.error ? "error" : "idle",
       lastActivity: new Date().toISOString(),
       lastError: result.error ?? null,
     });
+
+    if (result.cost || result.numTurns) {
+      accumulateSessionCost(
+        currentSession.id,
+        result.cost ?? 0,
+        result.numTurns ?? 1,
+      );
+    }
+
     if (syncRequested && !rateLimit.limited && !wasInterrupted) {
       const meta = (getSession(currentSession.id)?.transportMeta || currentSession.transportMeta || {}) as Record<string, unknown>;
       if (meta && typeof meta === "object" && !Array.isArray(meta)) {
@@ -2028,6 +2170,17 @@ async function runWebSession(
         delete nextMeta["claudeSyncSince"];
         updateSession(currentSession.id, { transportMeta: nextMeta as any });
       }
+    }
+
+    // Fork-local: if this is a child session, notify the parent so it picks up the
+    // report and chains next steps. Upstream removed this in 24ab541 — see
+    // sessions/callbacks.ts for the why. This is the load-bearing wire for web-spawned
+    // employees (POST /api/sessions creates source='web' children).
+    if (completedSession && !wasInterrupted) {
+      notifyParentSession(completedSession, {
+        result: result.result,
+        error: result.error ?? null,
+      });
     }
 
     context.emit("session:completed", {
@@ -2051,11 +2204,16 @@ async function runWebSession(
       logger.info(`Skipping error handling for deleted web session ${currentSession.id}: ${errMsg}`);
       return;
     }
-    updateSession(currentSession.id, {
+    const erroredSession = updateSession(currentSession.id, {
       status: "error",
       lastActivity: new Date().toISOString(),
       lastError: errMsg,
     });
+    // Fork-local: surface the failure to the parent too — silent child errors
+    // were the worst part of the 29-hour Fire Studio stall on 2026-05-19.
+    if (erroredSession) {
+      notifyParentSession(erroredSession, { error: errMsg });
+    }
     context.emit("session:completed", {
       sessionId: currentSession.id,
       result: null,

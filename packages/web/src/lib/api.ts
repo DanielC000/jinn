@@ -109,16 +109,37 @@ interface UploadedFile {
   mimetype: string | null
 }
 
+export interface SessionsResponse {
+  /** Top-N most-recent sessions per group (employee / direct / cron). */
+  sessions: Record<string, unknown>[]
+  /** Total session count per group key, so the UI can show accurate "+N more". */
+  counts: Record<string, number>
+  /** How many per group the server returned (the load-more threshold). */
+  perGroup: number
+}
+
 export const api = {
   getStatus: () => get<Record<string, unknown>>("/api/status"),
-  getSessions: () => get<Record<string, unknown>[]>("/api/sessions"),
+  getSessions: () => get<SessionsResponse>("/api/sessions"),
+  /** One group's sessions, newest first — used by the sidebar "load more" button. */
+  getSessionsForGroup: (group: string, offset: number, limit = 50) =>
+    get<Record<string, unknown>[]>(
+      `/api/sessions?group=${encodeURIComponent(group)}&offset=${offset}&limit=${limit}`,
+    ),
+  /** Search across ALL sessions (title / employee / id), newest first. */
+  searchSessions: (query: string) =>
+    get<Record<string, unknown>[]>(`/api/sessions?q=${encodeURIComponent(query)}`),
   getSession: (id: string) => get<Record<string, unknown>>(`/api/sessions/${id}`),
   getSessionChildren: (id: string) => get<Record<string, unknown>[]>(`/api/sessions/${id}/children`),
-  updateSession: (id: string, data: { title?: string }) =>
+  updateSession: (id: string, data: { title?: string; autoSplitDisabled?: boolean }) =>
     put<Record<string, unknown>>(`/api/sessions/${id}`, data),
   deleteSession: (id: string) => del<Record<string, unknown>>(`/api/sessions/${id}`),
   duplicateSession: (id: string) =>
     post<Record<string, unknown>>(`/api/sessions/${id}/duplicate`, {}),
+  archiveSession: (id: string, data?: { summary?: string; summarizerModel?: string }) =>
+    post<Record<string, unknown>>(`/api/sessions/${id}/archive`, data ?? {}),
+  setAutoSplitDisabled: (id: string, disabled: boolean) =>
+    put<Record<string, unknown>>(`/api/sessions/${id}`, { autoSplitDisabled: disabled }),
   bulkDeleteSessions: (ids: string[]) =>
     post<{ status: string; count: number }>("/api/sessions/bulk-delete", { ids }),
   createSession: (data: Record<string, unknown>) =>

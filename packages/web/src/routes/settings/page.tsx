@@ -46,6 +46,13 @@ interface Config {
     interruptOnNewMessage?: boolean
     rateLimitStrategy?: "wait" | "fallback"
     fallbackEngine?: "codex"
+    autoSplit?: {
+      enabled?: boolean
+      triggerMessages?: number
+      triggerTokensEstimate?: number
+      mode?: "prompt" | "silent" | "disabled"
+      summarizerModel?: string
+    }
   }
   connectors?: {
     slack?: {
@@ -1062,6 +1069,110 @@ export default function SettingsPage() {
                 >
                   "Wait" pauses the session and continues automatically when Claude resets.
                   "Switch" answers immediately using GPT, then returns to Claude once the reset window passes.
+                </div>
+
+                <div
+                  className="border-t border-[var(--separator)] mt-[var(--space-3)] pt-[var(--space-3)]"
+                />
+
+                <div
+                  className="text-[length:var(--text-caption1)] font-[var(--weight-semibold)] text-[var(--text-tertiary)] mb-[var(--space-2)]"
+                >
+                  Auto-Split Mega-Chats
+                </div>
+                <div
+                  className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mb-[var(--space-3)]"
+                >
+                  Long sessions rehydrate the full transcript every turn, so token cost grows linearly.
+                  Auto-split archives a session past a threshold and continues in a fresh successor seeded with a compact summary.
+                </div>
+
+                <FieldRow label="Enabled">
+                  <ToggleSwitch
+                    checked={config.sessions?.autoSplit?.enabled ?? true}
+                    onChange={(v) =>
+                      updateConfig(["sessions", "autoSplit", "enabled"], v)
+                    }
+                  />
+                </FieldRow>
+
+                <FieldRow label="Trigger After Messages">
+                  <SettingsInput
+                    type="number"
+                    value={String(config.sessions?.autoSplit?.triggerMessages ?? 100)}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["sessions", "autoSplit", "triggerMessages"],
+                        Math.max(50, Math.min(500, Number(v) || 100)),
+                      )
+                    }
+                    placeholder="100"
+                  />
+                </FieldRow>
+                <div
+                  className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mt-[4px]"
+                >
+                  Surface a split prompt after this many messages on a single session (50–500).
+                </div>
+
+                <FieldRow label="Trigger Token Estimate">
+                  <SettingsInput
+                    type="number"
+                    value={String(config.sessions?.autoSplit?.triggerTokensEstimate ?? 80000)}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["sessions", "autoSplit", "triggerTokensEstimate"],
+                        Math.max(20000, Math.min(200000, Number(v) || 80000)),
+                      )
+                    }
+                    placeholder="80000"
+                  />
+                </FieldRow>
+                <div
+                  className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mt-[4px]"
+                >
+                  Or trigger earlier if the transcript byte-estimate (chars ÷ 4) exceeds this (20K–200K). Preview — not yet wired into the trigger.
+                </div>
+
+                <FieldRow label="Mode">
+                  <SettingsSelect
+                    value={config.sessions?.autoSplit?.mode ?? "prompt"}
+                    onChange={(v) =>
+                      updateConfig(["sessions", "autoSplit", "mode"], v)
+                    }
+                    options={[
+                      { value: "prompt", label: "Prompt (recommended)" },
+                      { value: "disabled", label: "Disabled" },
+                    ]}
+                  />
+                </FieldRow>
+                <div
+                  className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mt-[4px]"
+                >
+                  "Prompt" surfaces a banner in the chat and waits for you to archive manually.
+                  "Disabled" turns the feature off globally. ("Silent" mode exists in the backend but is intentionally hidden until the summarizer is validated on more real archives.)
+                </div>
+
+                <FieldRow label="Summarizer Model">
+                  <SettingsSelect
+                    value={config.sessions?.autoSplit?.summarizerModel ?? "sonnet"}
+                    onChange={(v) =>
+                      updateConfig(
+                        ["sessions", "autoSplit", "summarizerModel"],
+                        v,
+                      )
+                    }
+                    options={[
+                      { value: "sonnet", label: "Sonnet (default, cheap)" },
+                      { value: "haiku", label: "Haiku (cheapest)" },
+                      { value: "opus", label: "Opus (best quality)" },
+                    ]}
+                  />
+                </FieldRow>
+                <div
+                  className="text-[length:var(--text-caption1)] text-[var(--label-secondary)] mt-[4px]"
+                >
+                  Model used for the one-time summarization pass when a session is archived. Sonnet is plenty for this — Opus is overkill unless summaries come back too thin.
                 </div>
               </Section>
 

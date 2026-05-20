@@ -153,7 +153,7 @@ export interface Session {
   model: string | null;
   title: string | null;
   parentSessionId: string | null;
-  status: "idle" | "running" | "error" | "waiting" | "interrupted";
+  status: "idle" | "running" | "error" | "waiting" | "interrupted" | "archived";
   effortLevel: string | null;
   totalCost: number;
   totalTurns: number;
@@ -162,6 +162,41 @@ export interface Session {
   createdAt: string;
   lastActivity: string;
   lastError: string | null;
+  // Auto-split mega-chats (Phase 1):
+  /** ISO timestamp when this session was archived in favor of a successor; null when active. */
+  archivedAt: string | null;
+  /** Session id of the successor (the new chat that took over after archive). */
+  archivedTo: string | null;
+  /** Session id this session was spawned from via auto-split; null when this is an original. */
+  archivedFrom: string | null;
+  /** When set, injected via --append-system-prompt on every turn so the model has prior context without rehydrating the full transcript. */
+  summaryPrompt: string | null;
+  /** When true, auto-split logic skips this session even if it crosses thresholds. */
+  autoSplitDisabled: boolean;
+  /**
+   * Computed: true when this session has crossed the auto-split threshold and
+   * is not yet archived/disabled. Surfaced by the API so the UI can render a
+   * "consider archiving this chat" banner. Not stored.
+   */
+  autoSplitDue?: boolean;
+  /**
+   * Computed: which threshold fired when `autoSplitDue: true`. Lets the UI
+   * write accurate banner copy (e.g. "this chat has 228 messages" vs.
+   * "this chat's transcript is ~85K tokens"). Not stored.
+   */
+  autoSplitTrigger?: "messages" | "bytes";
+  /**
+   * Computed: rough token estimate (bytes/4) when the byte trigger fires.
+   * Only present when `autoSplitTrigger === "bytes"`. Not stored.
+   */
+  autoSplitTokensEstimate?: number;
+  /**
+   * Computed: live message count for this session, surfaced alongside
+   * autoSplitDue so the auto-split banner can render "this chat has N messages"
+   * without a second round-trip. Only present when autoSplitDue was evaluated
+   * (i.e. for non-archived, non-disabled sessions). Not stored.
+   */
+  messageCount?: number;
 }
 
 export interface CronJob {
@@ -393,6 +428,32 @@ export interface JinnConfig {
     maxDurationMinutes?: number;
     maxCostUsd?: number;
     interruptOnNewMessage?: boolean;
+    /**
+     * Auto-split mega-chats: when a long-running session crosses a threshold,
+     * archive it and continue in a fresh successor session seeded with a
+     * compact summary (carried via --append-system-prompt). Keeps per-turn
+     * token cost flat on long-running coordination chats.
+     */
+    autoSplit?: {
+      /** Feature kill-switch. Default: true. */
+      enabled?: boolean;
+      /** Trigger after this many messages on a single session. Default: 100. */
+      triggerMessages?: number;
+      /** Or earlier if the transcript byte-estimate (chars/4) exceeds this. Default: 80000. */
+      triggerTokensEstimate?: number;
+      /**
+       * What to do when the threshold is crossed:
+       *   - "prompt"   — surface autoSplitDue=true in the session API so the
+       *                  UI can render a banner; user manually triggers the
+       *                  archive endpoint. (default — safest)
+       *   - "silent"   — auto-trigger archive on the next turn. Friendlier
+       *                  but lossier if the summary is bad.
+       *   - "disabled" — feature off globally (same as enabled=false).
+       */
+      mode?: "prompt" | "silent" | "disabled";
+      /** Model used for the summarization pass. Default: "sonnet". */
+      summarizerModel?: string;
+    };
     /** What to do when Claude hits a usage/rate limit. Default: "wait" (no automatic engine switch). Set to "fallback" to opt in to switching to Codex while Claude resets. */
     rateLimitStrategy?: "wait" | "fallback";
     /** Engine to use when rateLimitStrategy="fallback". Default: "codex" */
