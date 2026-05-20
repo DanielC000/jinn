@@ -31,6 +31,8 @@ import {
   getQueueItems,
   cancelAllPendingQueueItems,
   listAllPendingQueueItems,
+  listPendingQueueItemsForSession,
+  countPendingQueueItemsForSession,
   getFile,
   initDb,
 } from "../sessions/registry.js";
@@ -87,33 +89,70 @@ export interface ApiContext {
   interactiveClaudeEngine?: import("../engines/claude-interactive.js").InteractiveClaudeEngine;
 }
 
+/**
+ * Dispatch every pending web queue item for a single session. Shared by:
+ *   - the boot replay path (`resumePendingWebQueueItems`), which iterates all
+ *     sessions when sessions.autoResumeOnBoot=true
+ *   - the per-session resume endpoint (`POST /api/sessions/:id/resume`)
+ *
+ * Returns the number of items dispatched, or `null` when the session itself
+ * cannot be dispatched (missing, not web, engine unavailable). Best-effort:
+ * orphaned queue items (stale session, missing engine) are cancelled here so
+ * they don't accumulate indefinitely.
+ */
+export function dispatchPendingForSession(sessionId: string, context: ApiContext): number | null {
+  let session = getSession(sessionId);
+  if (!session) return null;
+  if (session.source !== "web") return null;
+  session = maybeRevertEngineOverride(session);
+
+  const config = context.getConfig();
+  const engine = context.sessionManager.getEngine(session.engine);
+  if (!engine) {
+    updateSession(session.id, {
+      status: "error",
+      lastActivity: new Date().toISOString(),
+      lastError: `Engine "${session.engine}" not available`,
+    });
+    return null;
+  }
+
+  const items = listPendingQueueItemsForSession(session.id);
+  if (items.length === 0) return 0;
+
+  updateSession(session.id, {
+    status: "running",
+    lastActivity: new Date().toISOString(),
+    lastError: null,
+  });
+
+  let dispatched = 0;
+  for (const item of items) {
+    dispatchWebSessionRun(session, item.prompt, engine, config, context, { queueItemId: item.id });
+    dispatched++;
+  }
+  return dispatched;
+}
+
 export function resumePendingWebQueueItems(context: ApiContext): void {
   const pending = listAllPendingQueueItems();
   if (pending.length === 0) return;
 
-  let resumed = 0;
+  // Group by session so we only call dispatchPendingForSession once per session.
+  const sessionIds = new Set<string>();
   for (const item of pending) {
-    let session = getSession(item.sessionId);
+    const session = getSession(item.sessionId);
     if (!session) {
       cancelQueueItem(item.id);
       continue;
     }
-    if (session.source !== "web") continue;
-    session = maybeRevertEngineOverride(session);
+    sessionIds.add(item.sessionId);
+  }
 
-    const config = context.getConfig();
-    const engine = context.sessionManager.getEngine(session.engine);
-    if (!engine) {
-      cancelQueueItem(item.id);
-      updateSession(session.id, { status: "error", lastActivity: new Date().toISOString(), lastError: `Engine "${session.engine}" not available` });
-      continue;
-    }
-
-    // Ensure the session is in a runnable state
-    updateSession(session.id, { status: "running", lastActivity: new Date().toISOString(), lastError: null });
-
-    dispatchWebSessionRun(session, item.prompt, engine, config, context, { queueItemId: item.id });
-    resumed++;
+  let resumed = 0;
+  for (const sid of sessionIds) {
+    const n = dispatchPendingForSession(sid, context);
+    if (n !== null) resumed += n;
   }
 
   if (resumed > 0) {
@@ -514,6 +553,12 @@ function serializeSession(session: Session, context: ApiContext): Session {
     autoSplitTrigger = result.trigger;
     autoSplitTokensEstimate = result.tokensEstimate;
   }
+  // Resumable pending count: surfaced so the resume-banner can render accurate
+  // copy ("12 message(s) queued"). Skip for archived (those rows stay frozen).
+  let resumablePendingCount: number | undefined;
+  if (session.status !== "archived") {
+    resumablePendingCount = countPendingQueueItemsForSession(session.id);
+  }
   return {
     ...session,
     queueDepth,
@@ -522,6 +567,7 @@ function serializeSession(session: Session, context: ApiContext): Session {
     ...(autoSplitTrigger !== undefined ? { autoSplitTrigger } : {}),
     ...(autoSplitTokensEstimate !== undefined ? { autoSplitTokensEstimate } : {}),
     ...(messageCount !== undefined ? { messageCount } : {}),
+    ...(resumablePendingCount !== undefined ? { resumablePendingCount } : {}),
   };
 }
 
@@ -698,18 +744,82 @@ export async function handleApiRequest(
     }
 
     // POST /api/sessions/:id/stop
+    // Stop = pause. Kills the in-flight engine turn (that one queue item ends
+    // as DB-completed, which is fine — it actually ran), pauses the in-memory
+    // queue so subsequent items don't auto-run, and marks the session
+    // 'interrupted' so the chat resume-banner surfaces in the UI. The user
+    // explicitly resumes via the banner (POST /api/sessions/:id/resume) or by
+    // sending a fresh message (auto-resumes via PUT /api/sessions/:id at the
+    // status==='interrupted' branch).
     params = matchRoute("/api/sessions/:id/stop", pathname);
     if (method === "POST" && params) {
       const session = getSession(params.id);
       if (!session) return notFound(res);
+      const sessionKey = session.sessionKey || session.sourceRef || session.id;
       const engine = context.sessionManager.getEngine(session.engine);
       if (engine && isInterruptibleEngine(engine)) {
         engine.kill(params.id, "Interrupted by user");
       }
-      context.sessionManager.getQueue().clearQueue(session.sessionKey || session.sourceRef || session.id);
-      updateSession(params.id, { status: "idle", lastActivity: new Date().toISOString(), lastError: null });
+      // Pause the in-memory queue so subsequent items wait at the poll loop
+      // until the user resumes. The currently-running fn() (if any) returns
+      // with the kill error — that one item's DB row ends as 'completed'.
+      context.sessionManager.getQueue().pauseQueue(sessionKey);
+      updateSession(params.id, {
+        status: "interrupted",
+        lastActivity: new Date().toISOString(),
+        lastError: "Interrupted by user",
+      });
       context.emit("session:stopped", { sessionId: params.id });
-      return json(res, { status: "stopped", sessionId: params.id });
+      context.emit("session:interrupted", { sessionId: params.id, reason: "user-stop" });
+      return json(res, { status: "interrupted", sessionId: params.id });
+    }
+
+    // POST /api/sessions/:id/resume
+    // Explicit user-driven resume. Two paths converge here:
+    //   - Boot-time recovery: gateway booted with autoResumeOnBoot=false; queue
+    //     items are pending in DB but not in the in-memory queue. Dispatch
+    //     them now via dispatchPendingForSession.
+    //   - Post-Stop resume: the in-memory queue is paused (via pauseQueue);
+    //     pending items are sitting at the poll-wait. Unblock them.
+    // Both can be true at once (boot then immediately stop), so do both.
+    params = matchRoute("/api/sessions/:id/resume", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      const sessionKey = session.sessionKey || session.sourceRef || session.id;
+      // Unblock any in-memory items poll-waiting on pauseQueue (from user-Stop).
+      context.sessionManager.getQueue().resumeQueue(sessionKey);
+      // Dispatch DB-pending items that aren't already in the in-memory queue.
+      // dispatchPendingForSession is idempotent for already-completed items
+      // (it only looks up status='pending' rows). Items added to in-memory
+      // via the existing chat-flow path won't be re-enqueued because their DB
+      // row already transitioned out of 'pending' via markQueueItemRunning.
+      const dispatched = dispatchPendingForSession(params.id, context);
+      if (dispatched === null) {
+        // Session missing/non-web/engine-unavailable. Still clear interrupted
+        // state so the banner goes away.
+        updateSession(params.id, {
+          status: "idle",
+          lastActivity: new Date().toISOString(),
+          lastError: null,
+        });
+        context.emit("session:resumed", { sessionId: params.id, dispatched: 0 });
+        return json(res, { status: "resumed", sessionId: params.id, dispatched: 0 });
+      }
+      // dispatchPendingForSession already flipped status='running' if it
+      // enqueued items. If nothing was pending in DB but the queue had paused
+      // in-memory items, the resumeQueue above will let them run — flip to
+      // idle so the banner clears (or running if there were items).
+      if (dispatched === 0) {
+        updateSession(params.id, {
+          status: "idle",
+          lastActivity: new Date().toISOString(),
+          lastError: null,
+        });
+      }
+      logger.info(`Resumed session ${params.id} — dispatched ${dispatched} pending item(s)`);
+      context.emit("session:resumed", { sessionId: params.id, dispatched });
+      return json(res, { status: "resumed", sessionId: params.id, dispatched });
     }
 
     // POST /api/sessions/:id/reset — clear stuck session state (stale engine IDs, errors)
@@ -2365,19 +2475,15 @@ async function runWebSession(
         updateSession(currentSession.id, { transportMeta: nextMeta as any });
       }
     }
-    if (completedSession) {
-      notifyParentSession(completedSession, { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
-    }
-
-    // Fork-local: if this is a child session, notify the parent so it picks up the
-    // report and chains next steps. Upstream removed this in 24ab541 — see
-    // sessions/callbacks.ts for the why. This is the load-bearing wire for web-spawned
-    // employees (POST /api/sessions creates source='web' children).
+    // Notify parent session on child completion. Mirrors the connector path
+    // in manager.ts:633-639: skip on user-initiated interrupt (the parent
+    // wasn't waiting for a partial report), respect employee.alwaysNotify.
     if (completedSession && !wasInterrupted) {
-      notifyParentSession(completedSession, {
-        result: result.result,
-        error: result.error ?? null,
-      });
+      notifyParentSession(
+        completedSession,
+        { result: result.result, error: result.error ?? null, cost: result.cost, durationMs: result.durationMs },
+        { alwaysNotify: employee?.alwaysNotify },
+      );
     }
 
     context.emit("session:completed", {
