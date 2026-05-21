@@ -1,5 +1,10 @@
 import TelegramBot from "node-telegram-bot-api";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type {
+  Attachment,
   Connector,
   ConnectorCapabilities,
   ConnectorHealth,
@@ -11,6 +16,12 @@ import type {
 import { deriveSessionKey, buildReplyContext, isOldTelegramMessage } from "./threads.js";
 import { formatResponse } from "./format.js";
 import { logger } from "../../shared/logger.js";
+import { TMP_DIR } from "../../shared/paths.js";
+import {
+  transcribe as sttTranscribe,
+  resolveLanguages,
+  getModelPath,
+} from "../../stt/stt.js";
 
 export class TelegramConnector implements Connector {
   name = "telegram";
@@ -30,6 +41,10 @@ export class TelegramConnector implements Connector {
     attachments: true,
   };
 
+  private readonly sttConfig?: TelegramConnectorConfig["stt"];
+  private sttChain: Promise<unknown> = Promise.resolve();
+  private sttPending = 0;
+
   constructor(config: TelegramConnectorConfig) {
     this.bot = new TelegramBot(config.botToken, { polling: false });
     this.ignoreOldMessagesOnBoot = config.ignoreOldMessagesOnBoot !== false;
@@ -37,6 +52,7 @@ export class TelegramConnector implements Connector {
       config.allowFrom && config.allowFrom.length > 0
         ? new Set(config.allowFrom)
         : null;
+    this.sttConfig = config.stt;
   }
 
   async start(): Promise<void> {
@@ -89,6 +105,200 @@ export class TelegramConnector implements Connector {
       const username =
         telegramMsg.from?.username || telegramMsg.from?.first_name || "unknown";
 
+      let messageText: string =
+        (telegramMsg as any).text || (telegramMsg as any).caption || "";
+
+      // File attachments: download via bot token and push to msg.attachments.
+      // sessions/manager.ts pulls localPath and engines auto-inject
+      // "Attached files: …" — no manual text formatting needed here.
+      const tg = telegramMsg as any;
+      type Spec = { file_id: string; name?: string; mime?: string };
+      const specs: Spec[] = [];
+      if (tg.document) {
+        specs.push({
+          file_id: tg.document.file_id,
+          name: tg.document.file_name,
+          mime: tg.document.mime_type,
+        });
+      }
+      if (tg.photo && tg.photo.length > 0) {
+        // Telegram returns size variants; the last is the largest.
+        specs.push({
+          file_id: tg.photo[tg.photo.length - 1].file_id,
+          mime: "image/jpeg",
+        });
+      }
+      if (tg.video) {
+        specs.push({
+          file_id: tg.video.file_id,
+          name: tg.video.file_name,
+          mime: tg.video.mime_type || "video/mp4",
+        });
+      }
+      // video_note is intentionally NOT attached here — the STT block below
+      // transcribes it instead (avoids double-handling the same message).
+      if (tg.animation) {
+        specs.push({
+          file_id: tg.animation.file_id,
+          name: tg.animation.file_name,
+          mime: tg.animation.mime_type || "video/mp4",
+        });
+      }
+      if (tg.sticker) {
+        specs.push({
+          file_id: tg.sticker.file_id,
+          mime: tg.sticker.is_animated
+            ? "application/x-tgsticker"
+            : "image/webp",
+        });
+      }
+
+      const attachments: Attachment[] = [];
+      if (specs.length > 0) {
+        fs.mkdirSync(TMP_DIR, { recursive: true });
+        for (const spec of specs) {
+          try {
+            const downloaded: string = await (this.bot as any).downloadFile(
+              spec.file_id,
+              TMP_DIR,
+            );
+            // Rename to a UUID so repeat Telegram basenames don't collide
+            // (matches the Slack connector's downloadAttachment pattern).
+            const ext =
+              path.extname(downloaded) ||
+              (spec.name ? path.extname(spec.name) : "");
+            const localPath = path.join(TMP_DIR, `${randomUUID()}${ext}`);
+            fs.renameSync(downloaded, localPath);
+            attachments.push({
+              name: spec.name || path.basename(downloaded),
+              url: localPath,
+              mimeType: spec.mime || "application/octet-stream",
+              localPath,
+            });
+          } catch (err) {
+            logger.warn(
+              `[telegram] Failed to download attachment: ${err instanceof Error ? err.message : err}`,
+            );
+          }
+        }
+      }
+
+      // Voice / audio / video_note → transcribe via STT module.
+      // If STT can't run for any reason, drop the message with a user-facing
+      // explanation rather than forwarding empty text downstream (which would
+      // crash session resume — see #54).
+      const voiceLike =
+        (telegramMsg as any).voice ||
+        (telegramMsg as any).audio ||
+        (telegramMsg as any).video_note;
+
+      if (voiceLike) {
+        const model = this.sttConfig?.model || "small";
+        let unavailable: string | null = null;
+        if (!this.sttConfig?.enabled) {
+          unavailable = "voice transcription is not enabled on this gateway";
+        } else if (!getModelPath(model)) {
+          unavailable = `STT model '${model}' is not downloaded`;
+        }
+
+        if (unavailable) {
+          logger.warn(`[telegram] Dropping voice message: ${unavailable}`);
+          try {
+            await this.bot.sendMessage(
+              telegramMsg.chat.id,
+              `⚠️ Couldn't transcribe your voice message — ${unavailable}. Please type instead.`,
+            );
+          } catch {
+            /* non-fatal */
+          }
+          return;
+        }
+
+        const langs = resolveLanguages(this.sttConfig);
+        const language = langs.length === 1 ? langs[0] : "auto";
+
+        // Serialize transcriptions: parallel whisper-cli runs OOM on small hosts.
+        // If another transcription is already in flight, send a one-line ack so
+        // the user doesn't sit through ~duration × queue position in silence.
+        this.sttPending++;
+        if (this.sttPending > 1) {
+          try {
+            await this.bot.sendMessage(
+              telegramMsg.chat.id,
+              "⏳ Transcribing a previous voice message — yours is queued.",
+            );
+          } catch {
+            /* non-fatal */
+          }
+        }
+
+        const myTurn = this.sttChain.then(async () => {
+          try {
+            await this.bot.sendChatAction(telegramMsg.chat.id, "typing");
+          } catch {
+            /* non-fatal */
+          }
+          logger.info(
+            `[telegram] Transcribing voice message (${voiceLike.duration}s, lang=${language})`,
+          );
+          const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tg-stt-"));
+          try {
+            const localPath = await (this.bot as any).downloadFile(
+              voiceLike.file_id,
+              tmpDir,
+            );
+            return await sttTranscribe(localPath, model, language);
+          } finally {
+            try {
+              fs.rmSync(tmpDir, { recursive: true, force: true });
+            } catch {
+              /* non-fatal */
+            }
+          }
+        });
+        this.sttChain = myTurn
+          .catch(() => undefined)
+          .finally(() => {
+            this.sttPending = Math.max(0, this.sttPending - 1);
+          });
+
+        let transcript: string | undefined;
+        try {
+          transcript = await myTurn;
+        } catch (err) {
+          logger.error(
+            `[telegram] STT failed: ${err instanceof Error ? err.message : err}`,
+          );
+          try {
+            await this.bot.sendMessage(
+              telegramMsg.chat.id,
+              "⚠️ Couldn't transcribe your voice message. Please try again or type instead.",
+            );
+          } catch {
+            /* non-fatal */
+          }
+          return;
+        }
+
+        if (transcript) {
+          messageText = messageText
+            ? `${messageText}\n\n${transcript}`
+            : transcript;
+          logger.info(`[telegram] Transcribed ${transcript.length} chars`);
+        } else {
+          logger.warn("[telegram] Transcription returned empty text");
+          try {
+            await this.bot.sendMessage(
+              telegramMsg.chat.id,
+              "⚠️ Couldn't make out anything in your voice message. Please try again or type instead.",
+            );
+          } catch {
+            /* non-fatal */
+          }
+          return;
+        }
+      }
+
       const msg: IncomingMessage = {
         connector: this.name,
         source: "telegram",
@@ -98,8 +308,8 @@ export class TelegramConnector implements Connector {
         channel: String(telegramMsg.chat.id),
         user: username,
         userId: String(userId ?? "unknown"),
-        text: telegramMsg.text || "",
-        attachments: [],
+        text: messageText,
+        attachments,
         raw: telegramMsg,
         transportMeta: {
           chatType: telegramMsg.chat.type,
