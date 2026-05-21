@@ -256,6 +256,16 @@ export type TaskStatus =
 
 export type TaskPriority = "low" | "med" | "high";
 
+/**
+ * Task kind:
+ *   - "standard" — the default. Deliverable is an artifact (code, doc, decision
+ *     captured as a follow-up task, etc.). Has a clear definition-of-done.
+ *   - "spike"    — time-boxed exploration. Deliverable is a **decision** captured
+ *     in the close-summary, not an artifact. Use for "investigate why X is slow"
+ *     work that doesn't have a known shape until you've poked at it.
+ */
+export type TaskKind = "standard" | "spike";
+
 export interface Task {
   id: string;
   organisationId: string;
@@ -270,6 +280,20 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
+  /**
+   * Generated on task close via one Sonnet pass across every bound session's
+   * transcript. Captures goals, decisions, deliverables, follow-up hooks — so
+   * future cross-task references (Supersedes/Superseded-by) can show *what*
+   * the closed task achieved, not just its title.
+   */
+  summary: string | null;
+  summaryGeneratedAt: string | null;
+  /**
+   * Task kind — see TaskKind. Defaults to "standard" so legacy rows still parse.
+   * Spike tasks render differently in Kanban + agent context and produce a
+   * decision-style summary on close.
+   */
+  kind: TaskKind;
 }
 
 export interface CronDelivery {
@@ -561,6 +585,16 @@ export interface JinnConfig {
     alertConnector?: string;
     /** If a cron job takes longer than this (ms), post a latency warning to the alert channel. Default: 300000 (5 min). */
     alertThresholdMs?: number;
+  };
+  tasks?: {
+    /**
+     * On task close, fire one Sonnet call across every bound session's transcript
+     * to populate `tasks.summary`. Fire-and-forget: the HTTP response doesn't
+     * wait. Disable to suppress entirely. Default: true.
+     */
+    autoSummarizeOnClose?: boolean;
+    /** Model alias for the summariser pass. Falls back to sessions.autoSplit.summarizerModel, then "sonnet". */
+    summarizerModel?: string;
   };
   notifications?: {
     connector?: string;  // defaults to "discord"

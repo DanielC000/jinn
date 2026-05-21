@@ -83,7 +83,11 @@ function DeleteConfirmDialog({
 const STORAGE_KEY_LEGACY = 'jinn-kanban'
 const STORAGE_KEY_TOAST_SEEN = 'jinn:kanban-prototype-cleared-toast-v1'
 
-function taskToTicket(task: Task, lead: Employee | null): KanbanTicket {
+function taskToTicket(
+  task: Task,
+  lead: Employee | null,
+  supersededByTaskIds: string[] = [],
+): KanbanTicket {
   const priority: TicketPriority = task.priority === 'med' ? 'medium' : (task.priority as TicketPriority)
   return {
     id: task.id,
@@ -101,6 +105,11 @@ function taskToTicket(task: Task, lead: Employee | null): KanbanTicket {
     updatedAt: new Date(task.updatedAt).getTime(),
     departmentId: lead?.department ?? null,
     stalled: task.status === 'stalled',
+    supersedesTaskId: task.supersedesTaskId ?? null,
+    supersededByTaskIds,
+    summary: task.summary ?? null,
+    summaryGeneratedAt: task.summaryGeneratedAt ?? null,
+    kind: task.kind ?? 'standard',
   }
 }
 
@@ -140,17 +149,28 @@ export default function KanbanPage() {
 
   const tickets: KanbanTicket[] = useMemo(() => {
     const tasks = tasksQuery.data ?? []
-    return tasks.map((t) => taskToTicket(t, leadEmployee))
+    // Reverse index: for each task, which other tasks declare it as their
+    // supersedes target? Lets the detail panel render "Superseded by …" links
+    // without a second fetch.
+    const supersededByIndex = new Map<string, string[]>()
+    for (const t of tasks) {
+      if (!t.supersedesTaskId) continue
+      const arr = supersededByIndex.get(t.supersedesTaskId) ?? []
+      arr.push(t.id)
+      supersededByIndex.set(t.supersedesTaskId, arr)
+    }
+    return tasks.map((t) => taskToTicket(t, leadEmployee, supersededByIndex.get(t.id) ?? []))
   }, [tasksQuery.data, leadEmployee])
 
   const handleCreateTicket = useCallback(
-    (data: { title: string; description: string; priority: TicketPriority; assigneeId: string | null }) => {
+    (data: { title: string; description: string; priority: TicketPriority; assigneeId: string | null; kind: 'standard' | 'spike' }) => {
       const priority = data.priority === 'medium' ? 'med' : data.priority
       createTaskMutation.mutate({
         title: data.title,
         description: data.description,
         priority: priority as 'low' | 'med' | 'high',
         status: 'backlog',
+        kind: data.kind,
       })
     },
     [createTaskMutation],
@@ -407,6 +427,7 @@ export default function KanbanPage() {
           <TicketDetailPanel
             ticket={selectedTicket}
             employees={employees}
+            allTickets={tickets}
             onClose={() => setSelectedTicket(null)}
             onStatusChange={(status) => handleMoveTicket(selectedTicket.id, status)}
             onAssigneeChange={() => {
@@ -414,6 +435,7 @@ export default function KanbanPage() {
               // per-task assignee overrides via the new tools API.
             }}
             onDelete={() => setDeleteConfirm(selectedTicket)}
+            onTicketSelect={(t) => setSelectedTicket(t)}
           />
         )}
 

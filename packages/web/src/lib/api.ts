@@ -73,6 +73,8 @@ export type TaskStatus =
 
 export type TaskPriority = "low" | "med" | "high";
 
+export type TaskKind = "standard" | "spike";
+
 export interface Task {
   id: string;
   organisationId: string;
@@ -85,6 +87,11 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
+  /** Generated on task close — see closed-task summarisation. May be null until the summary lands. */
+  summary?: string | null;
+  summaryGeneratedAt?: string | null;
+  /** Task kind — defaults to "standard" on legacy rows; new rows can be created as "spike". */
+  kind?: TaskKind;
 }
 
 /**
@@ -240,6 +247,7 @@ export const api = {
       priority?: TaskPriority;
       status?: TaskStatus;
       supersedesTaskId?: string | null;
+      kind?: TaskKind;
     },
   ) =>
     post<Task>(`/api/organisations/${encodeURIComponent(organisationId)}/tasks`, data),

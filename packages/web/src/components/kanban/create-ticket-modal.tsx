@@ -2,7 +2,7 @@
 import { useState, useCallback } from 'react'
 import { Plus } from 'lucide-react'
 import type { Employee } from '@/lib/api'
-import type { TicketPriority } from '@/lib/kanban/types'
+import type { TicketKind, TicketPriority } from '@/lib/kanban/types'
 import { PRIORITY_COLORS } from '@/lib/kanban/types'
 import { EmployeePicker } from './employee-picker'
 import {
@@ -22,6 +22,7 @@ interface CreateTicketModalProps {
     description: string
     priority: TicketPriority
     assigneeId: string | null
+    kind: TicketKind
   }) => void
 }
 
@@ -38,6 +39,7 @@ const initialState = {
   description: '',
   priority: 'medium' as TicketPriority,
   assigneeId: '' as string,
+  kind: 'standard' as TicketKind,
 }
 
 export function CreateTicketModal({
@@ -66,6 +68,7 @@ export function CreateTicketModal({
       description: form.description.trim(),
       priority: form.priority,
       assigneeId: form.assigneeId || null,
+      kind: form.kind,
     })
 
     resetForm()
@@ -162,6 +165,35 @@ export function CreateTicketModal({
                       style={{ background: PRIORITY_COLORS[p] }}
                     />
                     {PRIORITY_LABELS[p]}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Kind: standard vs spike. Spike = time-boxed exploration whose
+              deliverable is a decision, not an artifact. */}
+          <div className="flex flex-col gap-[var(--space-2)]">
+            <span className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-secondary)]">
+              Kind
+            </span>
+            <div className="flex gap-[var(--space-2)]">
+              {(['standard', 'spike'] as TicketKind[]).map((k) => {
+                const isSelected = form.kind === k
+                const label = k === 'spike' ? 'Spike (explore → decide)' : 'Standard (ship artifact)'
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, kind: k }))}
+                    className="flex-1 flex items-center justify-center py-[var(--space-2)] px-[var(--space-3)] rounded-[var(--radius-md)] cursor-pointer text-[length:var(--text-caption1)] font-[var(--weight-medium)] transition-all duration-150 ease-[var(--ease-smooth)]"
+                    style={{
+                      border: isSelected ? '2px solid var(--accent)' : '2px solid var(--separator)',
+                      background: isSelected ? 'var(--fill-tertiary)' : 'transparent',
+                      color: isSelected ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                    }}
+                  >
+                    {label}
                   </button>
                 )
               })}

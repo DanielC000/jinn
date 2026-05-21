@@ -96,6 +96,14 @@ export function TicketCard({ ticket, assigneeName, onClick, onDelete }: TicketCa
           />
           {PRIORITY_LABELS[ticket.priority]}
         </span>
+        {ticket.kind === 'spike' && (
+          <span
+            title="Spike — time-boxed exploration; deliverable is a decision, not an artifact"
+            className="inline-flex items-center text-[length:var(--text-caption2)] font-semibold shrink-0 mt-0.5 text-[var(--accent)] border border-[var(--accent)] rounded-[var(--radius-sm)] px-[4px] leading-[1.4] uppercase tracking-[0.3px]"
+          >
+            Spike
+          </span>
+        )}
         <span className="text-[length:var(--text-footnote)] font-[var(--weight-semibold)] text-[var(--text-primary)] leading-[1.3] line-clamp-2 overflow-hidden break-words">
           {ticket.title}
         </span>
