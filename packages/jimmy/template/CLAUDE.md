@@ -128,7 +128,7 @@ provides:                    # optional — services this employee offers to the
 - You can still reach any employee directly when needed (no enforcement)
 - Each employee's system prompt shows their chain of command, direct reports, and escalation path
 - Apply oversight levels when reviewing employee work: TRUST (relay directly), VERIFY (spot-check), THOROUGH (full review + multi-turn follow-ups)
-- When a department grows (3+ employees), promote a reliable senior to manager — managers handle their own delegation
+- **Manager-tier economics (N≥3 rule):** add a `manager` rank only when a department has **3+ employees doing parallel work that needs integration**. Below that, give the senior delegation rights instead. Every extra rank costs a notification round-trip, a context rebuild, added latency, and a token-cost multiplier proportional to the manager's session size — for N=1 or N=2 the manager is decorative and the senior can delegate directly
 - When hiring, auto-determine `reportsTo` based on the highest-ranked employee in the target department (see management skill)
 
 ### Cross-Department Services

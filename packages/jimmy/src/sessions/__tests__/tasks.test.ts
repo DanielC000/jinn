@@ -88,6 +88,32 @@ describe("Phase 3 tasks", () => {
     expect(registry.getTask(t.id)).toBeUndefined();
   });
 
+  test("defaults to kind='standard'; can be created as 'spike'", async () => {
+    const { registry, orgId } = await withFreshOrg();
+    const std = registry.createTask({ organisationId: orgId, title: "Standard" });
+    const spike = registry.createTask({ organisationId: orgId, title: "Investigate latency", kind: "spike" });
+    expect(std.kind).toBe("standard");
+    expect(spike.kind).toBe("spike");
+    expect(registry.getTask(spike.id)?.kind).toBe("spike");
+  });
+
+  test("listTasksSupersedingTask returns the reverse chain", async () => {
+    const { registry, orgId } = await withFreshOrg();
+    const a = registry.createTask({ organisationId: orgId, title: "Original" });
+    const b = registry.createTask({ organisationId: orgId, title: "Follow-up", supersedesTaskId: a.id });
+    const c = registry.createTask({ organisationId: orgId, title: "Other follow-up", supersedesTaskId: a.id });
+    const unrelated = registry.createTask({ organisationId: orgId, title: "Unrelated" });
+
+    const successors = registry.listTasksSupersedingTask(a.id);
+    expect(successors.map((t) => t.id).sort()).toEqual([b.id, c.id].sort());
+
+    const noneForB = registry.listTasksSupersedingTask(b.id);
+    expect(noneForB).toHaveLength(0);
+
+    const noneForUnrelated = registry.listTasksSupersedingTask(unrelated.id);
+    expect(noneForUnrelated).toHaveLength(0);
+  });
+
   test("Phase 7: markSessionArchived archives every session bound to a task", async () => {
     const { registry, orgId } = await withFreshOrg();
     const task = registry.createTask({ organisationId: orgId, title: "ship", status: "in-progress" });

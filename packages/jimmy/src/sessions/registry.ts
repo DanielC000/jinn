@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { SESSIONS_DB } from '../shared/paths.js';
-import type { CronJob, JsonObject, Organisation, ReplyContext, Session, Task, TaskPriority, TaskStatus } from '../shared/types.js';
+import type { CronJob, JsonObject, Organisation, ReplyContext, Session, Task, TaskKind, TaskPriority, TaskStatus } from '../shared/types.js';
 
 let db: Database.Database;
 
@@ -415,6 +415,9 @@ function rowToTask(row: Record<string, unknown>): Task {
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     closedAt: (row.closed_at as string) ?? null,
+    summary: (row.summary as string) ?? null,
+    summaryGeneratedAt: (row.summary_generated_at as string) ?? null,
+    kind: ((row.kind as string) ?? 'standard') as TaskKind,
   };
 }
 
@@ -426,6 +429,7 @@ export interface CreateTaskOpts {
   priority?: TaskPriority;
   status?: TaskStatus;
   supersedesTaskId?: string | null;
+  kind?: TaskKind;
 }
 
 export function createTask(opts: CreateTaskOpts): Task {
@@ -434,9 +438,10 @@ export function createTask(opts: CreateTaskOpts): Task {
   const now = new Date().toISOString();
   const status = opts.status ?? 'backlog';
   const priority = opts.priority ?? 'med';
+  const kind = opts.kind ?? 'standard';
   db.prepare(
-    `INSERT INTO tasks (id, organisation_id, title, description, priority, status, supersedes_task_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO tasks (id, organisation_id, title, description, priority, status, supersedes_task_id, kind, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     opts.organisationId,
@@ -445,6 +450,7 @@ export function createTask(opts: CreateTaskOpts): Task {
     priority,
     status,
     opts.supersedesTaskId ?? null,
+    kind,
     now,
     now,
   );
@@ -460,7 +466,22 @@ export function createTask(opts: CreateTaskOpts): Task {
     createdAt: now,
     updatedAt: now,
     closedAt: null,
+    summary: null,
+    summaryGeneratedAt: null,
+    kind,
   };
+}
+
+/**
+ * Set or replace a task's summary text. Bumps summary_generated_at to now so the
+ * UI can show "summarised 5 min ago" without separate bookkeeping.
+ */
+export function setTaskSummary(id: string, summary: string | null): Task | undefined {
+  const db = initDb();
+  const now = new Date().toISOString();
+  db.prepare(`UPDATE tasks SET summary = ?, summary_generated_at = ?, updated_at = ? WHERE id = ?`)
+    .run(summary, summary ? now : null, now, id);
+  return getTask(id);
 }
 
 export function getTask(id: string): Task | undefined {
@@ -577,6 +598,18 @@ export function listSessionsForTask(taskId: string): Session[] {
 }
 
 /**
+ * Reverse lookup: tasks whose supersedes_task_id points at the given task.
+ * Used to surface "Superseded by …" links in the UI + agent context.
+ */
+export function listTasksSupersedingTask(taskId: string): Task[] {
+  const db = initDb();
+  const rows = db
+    .prepare(`SELECT * FROM tasks WHERE supersedes_task_id = ? ORDER BY created_at ASC`)
+    .all(taskId) as Record<string, unknown>[];
+  return rows.map(rowToTask);
+}
+
+/**
  * Phase 5: find an existing session for (employee, taskId). Returns null when
  * no live session exists. "Live" means any status except 'archived'.
  *
@@ -636,8 +669,39 @@ export function initDb(): Database.Database {
   db.exec(CREATE_EMPLOYEES_TABLE);
   db.exec(CREATE_EMPLOYEES_ORG_INDEX);
   db.exec(CREATE_CRON_JOBS_TABLE);
+  migrateTasksSchema(db);
 
   return db;
+}
+
+/**
+ * Add columns to the `tasks` table that were introduced after Phase 1 shipped.
+ * Mirrors migrateSessionsSchema(): idempotent PRAGMA-driven ALTER TABLE for any
+ * column that doesn't yet exist on an existing DB. Greenfield installs get the
+ * columns via CREATE TABLE (when present in the DDL); ALTER TABLE picks up
+ * everything that was added post-CREATE.
+ */
+export function migrateTasksSchema(database: Database.Database): void {
+  const cols = database.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
+  const colNames = new Set(cols.map((c) => c.name));
+  const missingColumns: Array<[string, string, string?]> = [
+    // Closed-task summarization: one Sonnet call on close populates this so
+    // future tasks (and the operator) can reference what a closed task achieved
+    // without re-reading every bound session's transcript.
+    ['summary', 'TEXT'],
+    ['summary_generated_at', 'TEXT'],
+    // Task kind: 'standard' (default — artifact-as-deliverable) or 'spike'
+    // (time-boxed exploration — decision-as-deliverable). Surfaced in UI
+    // and injected into the agent's task context so it knows what kind of
+    // work the task represents.
+    ['kind', 'TEXT', "'standard'"],
+  ];
+  for (const [name, type, defaultVal] of missingColumns) {
+    if (!colNames.has(name)) {
+      const defaultClause = defaultVal !== undefined ? ` DEFAULT ${defaultVal}` : '';
+      database.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}${defaultClause}`);
+    }
+  }
 }
 
 export function migrateSessionsSchema(database: Database.Database): void {

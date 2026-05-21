@@ -15,10 +15,12 @@ import {
   deleteSession,
   getSessionBySessionKey,
   getMessages,
+  getTask,
   insertMessage,
+  listTasksSupersedingTask,
   updateSession,
 } from "./registry.js";
-import { buildContext, buildMinimalContext } from "./context.js";
+import { buildContext, buildMinimalContext, type TaskContext } from "./context.js";
 import { withSummaryPrompt } from "./archive.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
 import { SessionQueue, type QueueChangeNotifier } from "./queue.js";
@@ -38,6 +40,24 @@ export interface RouteOptions {
   engine?: string;
   model?: string;
   title?: string;
+}
+
+/**
+ * Build a TaskContext snapshot for a session, or null if the session is untracked.
+ * Failures (missing task row, DB errors) degrade silently to null — task context
+ * is informative, not load-bearing for engine dispatch.
+ */
+function resolveTaskContext(session: Session): TaskContext | null {
+  if (!session.taskId) return null;
+  try {
+    const task = getTask(session.taskId);
+    if (!task) return null;
+    const supersedes = task.supersedesTaskId ? getTask(task.supersedesTaskId) ?? null : null;
+    const supersededBy = listTasksSupersedingTask(task.id);
+    return { task, supersedes, supersededBy };
+  } catch {
+    return null;
+  }
 }
 
 function maybeRevertEngineOverride(session: Session): Session {
@@ -277,6 +297,7 @@ export class SessionManager {
 
     try {
       const channelName = (msg.transportMeta?.channelName as string) || undefined;
+      const taskContext = resolveTaskContext(session);
       const systemPrompt = contextIsFresh
         ? buildMinimalContext({
             source: session.source,
@@ -287,6 +308,7 @@ export class SessionManager {
             config: this.config,
             sessionId: session.id,
             channelName,
+            taskContext,
           })
         : buildContext({
             source: session.source,
@@ -299,6 +321,7 @@ export class SessionManager {
             sessionId: session.id,
             channelName,
             hierarchy,
+            taskContext,
           });
 
       if (!contextIsFresh) {

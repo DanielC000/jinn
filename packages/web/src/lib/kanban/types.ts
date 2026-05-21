@@ -16,6 +16,10 @@ export type TicketStatus =
 // kept for backwards compat where stored localStorage still uses it.
 export type TicketPriority = 'low' | 'med' | 'medium' | 'high'
 
+// Task kind — mirrors the backend TaskKind. "standard" tasks ship artifacts;
+// "spike" tasks are time-boxed explorations that ship a decision.
+export type TicketKind = 'standard' | 'spike'
+
 export type WorkState = 'idle' | 'starting' | 'working' | 'done' | 'failed'
 
 export interface KanbanTicket {
@@ -33,6 +37,15 @@ export interface KanbanTicket {
   departmentId: string | null
   /** Phase 6: present when this task is stalled, surfaced as a banner. */
   stalled?: boolean
+  /** The task this one supersedes (replaces) — set when this is a follow-up. */
+  supersedesTaskId?: string | null
+  /** Tasks that supersede this one (i.e. follow-ups filed after this task closed). */
+  supersededByTaskIds?: string[]
+  /** Retrospective summary, generated on close. Null until the summariser has run. */
+  summary?: string | null
+  summaryGeneratedAt?: string | null
+  /** Task kind — standard (default, artifact deliverable) or spike (decision deliverable). */
+  kind?: TicketKind
 }
 
 export interface KanbanColumn {

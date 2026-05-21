@@ -1,7 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Employee, JinnConfig } from "../shared/types.js";
+import type { Employee, JinnConfig, Task } from "../shared/types.js";
 import { JINN_HOME, ORG_DIR, CRON_JOBS, DOCS_DIR } from "../shared/paths.js";
+
+/**
+ * Active task block injected into the agent's context when a session is task-bound.
+ * `supersedes` is the task this one replaces; `supersededBy` is the list of tasks
+ * that replace this one (typically populated after this task is closed and follow-ups
+ * are filed). Both are surfaced as short title-prefixed bullets, not full transcripts.
+ */
+export interface TaskContext {
+  task: Task;
+  supersedes?: Task | null;
+  supersededBy?: Task[];
+}
 
 /**
  * Token budget strategy:
@@ -55,6 +67,7 @@ export function buildContext(opts: {
   language?: string;
   channelName?: string;
   hierarchy?: import("../shared/types.js").OrgHierarchy;
+  taskContext?: TaskContext | null;
 }): string {
   const maxChars = opts.config?.context?.maxChars ?? DEFAULT_MAX_CONTEXT_CHARS;
   const sections: Section[] = [];
@@ -109,6 +122,18 @@ export function buildContext(opts: {
     content: buildSessionContext({ ...opts, sessionId: opts.sessionId }),
     summary: "", // always included, no trimming
   });
+
+  // ── ESSENTIAL: Active task (when task-bound) ───────────────
+  // Carries the per-task reuse reminder + cross-task references so warm
+  // sessions see them on every turn (buildMinimalContext also injects this).
+  if (opts.taskContext) {
+    sections.push({
+      tier: Tier.ESSENTIAL,
+      marker: "## Current task",
+      content: buildTaskContextBlock(opts.taskContext),
+      summary: "",
+    });
+  }
 
   // ── ESSENTIAL: Configuration awareness ──────────────────────
   if (opts.config) {
@@ -231,6 +256,7 @@ export function buildMinimalContext(opts: {
   operatorName?: string;
   language?: string;
   channelName?: string;
+  taskContext?: TaskContext | null;
 }): string {
   const portalName = opts.portalName || opts.config?.portal?.portalName || "Jinn";
   const operatorName = opts.operatorName || opts.config?.portal?.operatorName;
@@ -255,6 +281,10 @@ export function buildMinimalContext(opts: {
     sessionId: opts.sessionId,
     channelName: opts.channelName,
   }));
+
+  if (opts.taskContext) {
+    parts.push(buildTaskContextBlock(opts.taskContext));
+  }
 
   if (opts.config) {
     parts.push(buildConfigContext(opts.config, gatewayUrl));
@@ -392,6 +422,60 @@ Your working directory is \`~/.jinn\` (${JINN_HOME}). This contains:
 - \`AGENTS.md\` — agent/employee documentation
 
 You can read, write, and modify any of these files to configure yourself, create new employees, add skills, etc.`;
+}
+
+/**
+ * Active-task block emitted whenever the session is bound to a task. Carries:
+ * - The task id, title, status — so the agent can name the work it's on.
+ * - Supersedes / superseded-by links — so coherent investigations split across
+ *   tasks aren't shattered invisibly.
+ * - The per-task reuse reminder — one line, kept here (rather than only in the
+ *   full delegation protocol) so warm sessions see it every turn.
+ *
+ * Total length is ~300–800 chars depending on cross-task chain depth.
+ */
+function buildTaskContextBlock(ctx: TaskContext): string {
+  const { task, supersedes, supersededBy } = ctx;
+  const isSpike = task.kind === "spike";
+  const lines: string[] = [`## Current task`];
+  lines.push(`- ID: \`${task.id}\``);
+  lines.push(`- Title: ${task.title}`);
+  lines.push(`- Status: ${task.status}`);
+  if (isSpike) {
+    lines.push(`- Kind: **SPIKE** (time-boxed exploration — deliverable is a *decision*, not an artifact)`);
+  }
+  if (task.priority && task.priority !== "med") {
+    lines.push(`- Priority: ${task.priority}`);
+  }
+
+  if (supersedes) {
+    lines.push(`- Supersedes: "${supersedes.title}" (\`${supersedes.id}\`, ${supersedes.status})`);
+  }
+  if (supersededBy && supersededBy.length > 0) {
+    const list = supersededBy
+      .map((t) => `"${t.title}" (\`${t.id}\`, ${t.status})`)
+      .join("; ");
+    lines.push(`- Superseded by: ${list}`);
+  }
+
+  lines.push("");
+  if (isSpike) {
+    lines.push(
+      `**This is a spike.** Don't ship code or documents — investigate, then report. ` +
+      `A successful close on a spike answers a question: "What did we learn? What do ` +
+      `we recommend?" When you have enough to recommend a direction, close the task ` +
+      `with your recommendation in the close summary. If the spike surfaces concrete ` +
+      `work, file follow-up tasks with \`supersedesTaskId\` linking back to this one.`,
+    );
+    lines.push("");
+  }
+  lines.push(
+    `Per-task reuse: one child session per (employee, task). When you delegate ` +
+    `for this task, the POST returns any existing child for the same employee — ` +
+    `your prompt lands as a new turn, not a duplicate session.`,
+  );
+
+  return lines.join("\n");
 }
 
 function buildSessionContext(opts: {

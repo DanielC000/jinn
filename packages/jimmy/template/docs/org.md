@@ -81,6 +81,20 @@ Task fields: `id`, `title`, `assignee`, `status` (open, in-progress, done, block
 | **senior** | Can message employees in their department. Can update tasks assigned to them. |
 | **employee** | Can update tasks assigned to them. Can post to their department's board. |
 
+### When to add a manager rank (N≥3 rule)
+
+A `manager` tier earns its slot only when it's doing **integration work** — combining outputs from multiple parallel reports and translating across them. Add a manager when a department has **3+ employees doing parallel work that needs integration**. Below that, give the senior delegation rights instead.
+
+Every additional rank costs:
+- One extra notification round-trip per delegation
+- One extra context rebuild on the manager's session
+- One extra turn of latency between brief and execution
+- A token-cost multiplier proportional to the manager's session size
+
+For N=1 or N=2, a manager tier is decorative — the cognitive value of "manager translates COO brief into engineer brief" is stylistic, not structural. The senior can delegate directly with the same outcome at a fraction of the cost.
+
+Diagnostic: if you can't name what your manager does that a senior-with-delegation-capability couldn't, the rank is decorative. Collapse it.
+
 ## Communication
 
 - **Downward**: Higher-ranked agents write tasks to lower-ranked agents' department boards

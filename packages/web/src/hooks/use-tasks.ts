@@ -35,6 +35,7 @@ export function useCreateTask() {
       priority?: TaskPriority
       status?: TaskStatus
       supersedesTaskId?: string | null
+      kind?: 'standard' | 'spike'
     }) => {
       if (!orgId) throw new Error("No active Organisation")
       return api.createTask(orgId, data)

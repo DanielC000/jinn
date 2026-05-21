@@ -31,23 +31,124 @@ function StatusBadge({ status }: { status: TicketStatus }) {
   )
 }
 
+/**
+ * Retrospective summary, rendered as a collapsed-by-default block on closed
+ * tasks (status=done). Populated by the closed-task summariser on close — may
+ * be absent if the task was closed before that feature, or if summarisation
+ * failed (in which case operator can re-trigger via DB or future endpoint).
+ */
+function TaskSummary({ ticket }: { ticket: KanbanTicket }) {
+  if (!ticket.summary) return null
+  return (
+    <div className="px-[var(--space-5)] pb-[var(--space-4)]">
+      <div className="h-px bg-[var(--separator)] mb-[var(--space-3)]" />
+      <div className="text-[length:var(--text-caption1)] font-semibold text-[var(--text-tertiary)] uppercase tracking-[0.5px] mb-[var(--space-2)] flex items-center justify-between">
+        <span>Retrospective</span>
+        {ticket.summaryGeneratedAt && (
+          <span className="text-[length:var(--text-caption2)] font-normal normal-case tracking-normal text-[var(--text-tertiary)]">
+            {new Date(ticket.summaryGeneratedAt).toLocaleString()}
+          </span>
+        )}
+      </div>
+      <div className="text-[length:var(--text-footnote)] text-[var(--text-secondary)] leading-[1.5] whitespace-pre-wrap">
+        {ticket.summary}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Cross-task references — surfaces the supersedes / superseded-by relationships
+ * so coherent investigations split across tasks aren't shattered invisibly.
+ * Links are click-through when `onTicketSelect` + `allTickets` are wired by the
+ * parent; otherwise renders as static text with the task id as fallback label.
+ */
+function CrossTaskRefs({
+  ticket,
+  allTickets,
+  onTicketSelect,
+}: {
+  ticket: KanbanTicket
+  allTickets?: KanbanTicket[]
+  onTicketSelect?: (t: KanbanTicket) => void
+}) {
+  const supersedes = ticket.supersedesTaskId
+    ? allTickets?.find((t) => t.id === ticket.supersedesTaskId) ?? null
+    : null
+  const supersededBy = (ticket.supersededByTaskIds ?? [])
+    .map((id) => allTickets?.find((t) => t.id === id))
+    .filter((t): t is KanbanTicket => Boolean(t))
+
+  const hasAny = Boolean(supersedes) || supersededBy.length > 0
+  if (!hasAny) return null
+
+  function renderLink(t: KanbanTicket) {
+    const clickable = Boolean(onTicketSelect)
+    return (
+      <button
+        key={t.id}
+        type="button"
+        onClick={() => onTicketSelect?.(t)}
+        disabled={!clickable}
+        className="text-left text-[length:var(--text-footnote)] text-[var(--text-secondary)] hover:text-[var(--accent)] disabled:cursor-default bg-transparent border-none p-0 cursor-pointer"
+      >
+        <span className="font-semibold">{t.title}</span>
+        <span className="ml-[var(--space-2)] text-[length:var(--text-caption2)] text-[var(--text-tertiary)] uppercase tracking-[0.3px]">
+          {t.status}
+        </span>
+      </button>
+    )
+  }
+
+  return (
+    <div className="px-[var(--space-5)] pb-[var(--space-4)]">
+      <div className="h-px bg-[var(--separator)] mb-[var(--space-3)]" />
+      <div className="text-[length:var(--text-caption1)] font-semibold text-[var(--text-tertiary)] uppercase tracking-[0.5px] mb-[var(--space-2)]">
+        Cross-task references
+      </div>
+      {supersedes && (
+        <div className="mb-[var(--space-2)]">
+          <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] uppercase tracking-[0.3px] mb-[2px]">
+            Supersedes
+          </div>
+          {renderLink(supersedes)}
+        </div>
+      )}
+      {supersededBy.length > 0 && (
+        <div>
+          <div className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)] uppercase tracking-[0.3px] mb-[2px]">
+            Superseded by
+          </div>
+          <div className="flex flex-col gap-[var(--space-1)]">
+            {supersededBy.map(renderLink)}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* Main component */
 interface TicketDetailPanelProps {
   ticket: KanbanTicket
   employees: Employee[]
+  allTickets?: KanbanTicket[]
   onClose: () => void
   onStatusChange: (status: TicketStatus) => void
   onAssigneeChange: (employeeName: string | null) => void
   onDelete: () => void
+  onTicketSelect?: (ticket: KanbanTicket) => void
 }
 
 export function TicketDetailPanel({
   ticket,
   employees,
+  allTickets,
   onClose,
   onStatusChange,
   onAssigneeChange,
   onDelete,
+  onTicketSelect,
 }: TicketDetailPanelProps) {
   const closeRef = useRef<HTMLButtonElement>(null)
 
@@ -102,9 +203,17 @@ export function TicketDetailPanel({
               {ticket.title}
             </h2>
 
-            <div className="flex items-center gap-[var(--space-3)] mt-[var(--space-2)]">
+            <div className="flex items-center gap-[var(--space-3)] mt-[var(--space-2)] flex-wrap">
               <StatusBadge status={ticket.status} />
               <PriorityBadge priority={ticket.priority} />
+              {ticket.kind === 'spike' && (
+                <span
+                  title="Spike — time-boxed exploration; deliverable is a decision, not an artifact"
+                  className="inline-flex items-center text-[length:var(--text-caption2)] font-semibold text-[var(--accent)] border border-[var(--accent)] rounded-[var(--radius-sm)] px-[var(--space-2)] py-[2px] uppercase tracking-[0.3px]"
+                >
+                  Spike
+                </span>
+              )}
             </div>
 
             {/* Assignee */}
@@ -174,6 +283,9 @@ export function TicketDetailPanel({
               </div>
             </div>
           )}
+
+          <TaskSummary ticket={ticket} />
+          <CrossTaskRefs ticket={ticket} allTickets={allTickets} onTicketSelect={onTicketSelect} />
         </div>
 
         {/* Delete button */}

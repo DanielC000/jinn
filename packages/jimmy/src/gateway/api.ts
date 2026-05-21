@@ -35,10 +35,13 @@ import {
   countPendingQueueItemsForSession,
   getFile,
   initDb,
+  getTask as registryGetTask,
+  listTasksSupersedingTask as registryListTasksSupersedingTask,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { archiveSession, isAutoSplitDue, withSummaryPrompt, AUTO_SPLIT_DEFAULTS } from "../sessions/archive.js";
 import { summarizeSession } from "../sessions/summarize.js";
+import { summarizeTask } from "../sessions/summarize-task.js";
 import { loadTranscriptMessages } from "../sessions/transcript.js";
 import {
   CONFIG_PATH,
@@ -583,6 +586,37 @@ function matchRoute(
     }
   }
   return params;
+}
+
+/**
+ * Run the closed-task retrospective summariser. Invoked fire-and-forget from
+ * POST /api/tasks/:id/close; failures are logged but don't surface to the user
+ * who already saw "task closed". Emits task:summarized on success.
+ */
+async function runTaskSummariser(task: import("../shared/types.js").Task, context: ApiContext): Promise<void> {
+  const cfg = context.getConfig();
+  // Default summariser model: the auto-split summariser's setting if set,
+  // otherwise sonnet. Same model is right for both — clean Sonnet pass over
+  // text, no persona resume.
+  const summarizerModel = cfg.tasks?.summarizerModel
+    || cfg.sessions?.autoSplit?.summarizerModel
+    || "sonnet";
+  const engineConfig = cfg.engines.claude;
+  const engine = context.sessionManager.getEngine("claude");
+  if (!engine) {
+    logger.warn(`[tasks] No claude engine registered — skipping summary for task ${task.id}`);
+    return;
+  }
+  const summary = await summarizeTask({
+    task,
+    engine,
+    bin: engineConfig.bin,
+    cwd: JINN_HOME,
+    model: summarizerModel,
+  });
+  if (summary) {
+    context.emit("task:summarized", { taskId: task.id, summary });
+  }
 }
 
 function serializeSession(session: Session, context: ApiContext): Session {
@@ -1733,6 +1767,10 @@ export async function handleApiRequest(
         if (typeof body.supersedesTaskId !== "string") return badRequest(res, "supersedesTaskId must be a string");
         if (!getTask(body.supersedesTaskId)) return badRequest(res, "supersedesTaskId references unknown task");
       }
+      const kind = body.kind as "standard" | "spike" | undefined;
+      if (kind !== undefined && kind !== "standard" && kind !== "spike") {
+        return badRequest(res, "kind must be 'standard' or 'spike'");
+      }
       const task = createTask({
         organisationId: params.orgId,
         title: body.title.trim(),
@@ -1740,18 +1778,23 @@ export async function handleApiRequest(
         priority,
         status,
         supersedesTaskId: body.supersedesTaskId ?? null,
+        kind,
       });
       context.emit("task:created", { task });
       return json(res, task, 201);
     }
 
-    // GET /api/tasks/:id — single task detail
+    // GET /api/tasks/:id — single task detail with cross-task references
     params = matchRoute("/api/tasks/:id", pathname);
     if (method === "GET" && params) {
-      const { getTask } = await import("../sessions/registry.js");
+      const { getTask, listTasksSupersedingTask } = await import("../sessions/registry.js");
       const task = getTask(params.id);
       if (!task) return notFound(res);
-      return json(res, task);
+      const successors = listTasksSupersedingTask(task.id);
+      return json(res, {
+        ...task,
+        supersededByTaskIds: successors.map((t) => t.id),
+      });
     }
 
     // PATCH /api/tasks/:id — update fields and/or transition status
@@ -1809,7 +1852,9 @@ export async function handleApiRequest(
     }
 
     // POST /api/tasks/:id/close — terminal close. Sets status=done, closed_at,
-    // archives every bound session (no successor — task is terminal), emits task:closed.
+    // archives every bound session (no successor — task is terminal), then
+    // fires the retrospective summariser asynchronously (best-effort, doesn't
+    // block the HTTP response). Emits task:closed; emits task:summarized later.
     params = matchRoute("/api/tasks/:id/close", pathname);
     if (method === "POST" && params) {
       const { getTask, updateTask, listSessionsForTask, markSessionArchived } = await import("../sessions/registry.js");
@@ -1817,8 +1862,9 @@ export async function handleApiRequest(
       if (!existing) return notFound(res);
       if (existing.status === "done") return badRequest(res, "Task is already closed");
 
-      // Phase 7: archive every session bound to this task. No summary is
-      // generated — task-close has no successor that would consume one.
+      // Phase 7: archive every session bound to this task. Summary is generated
+      // asynchronously below — review/improvement item #2 from the v0.14.0
+      // workflow review.
       const bound = listSessionsForTask(params.id);
       let archivedCount = 0;
       for (const s of bound) {
@@ -1833,6 +1879,19 @@ export async function handleApiRequest(
       });
       context.emit("task:closed", { task: closed, archivedSessions: archivedCount });
       logger.info(`[tasks] Closed task ${params.id} — archived ${archivedCount} bound session(s)`);
+
+      // Fire-and-forget retrospective summariser. Closed-task summarisation
+      // doesn't gate the HTTP response — the operator gets immediate feedback
+      // that the task is closed; the summary trickles in seconds later via
+      // task:summarized. Disable via config.tasks.autoSummarizeOnClose=false.
+      const cfg = context.getConfig();
+      const summariseEnabled = cfg.tasks?.autoSummarizeOnClose !== false;
+      if (closed && summariseEnabled && archivedCount > 0) {
+        void runTaskSummariser(closed, context).catch((err) => {
+          logger.warn(`[tasks] Summarisation failed for task ${closed.id}: ${(err as Error)?.message ?? err}`);
+        });
+      }
+
       return json(res, { ...closed, archivedSessions: archivedCount });
     }
 
@@ -2776,6 +2835,20 @@ async function runWebSession(
 
   try {
 
+    // Resolve the bound task (if any) so the agent sees its title, status, and
+    // cross-task chain in the context block — mirrors manager.ts dispatch.
+    let webTaskContext = null;
+    if (currentSession.taskId) {
+      const t = registryGetTask(currentSession.taskId);
+      if (t) {
+        webTaskContext = {
+          task: t,
+          supersedes: t.supersedesTaskId ? registryGetTask(t.supersedesTaskId) ?? null : null,
+          supersededBy: registryListTasksSupersedingTask(t.id),
+        };
+      }
+    }
+
     const systemPrompt = buildContext({
       source: "web",
       channel: currentSession.sourceRef,
@@ -2785,6 +2858,7 @@ async function runWebSession(
       config,
       sessionId: currentSession.id,
       hierarchy: orgHierarchy,
+      taskContext: webTaskContext,
     });
 
     const engineConfig = currentSession.engine === "codex"
