@@ -5,7 +5,7 @@
 A major rework of how Jinn structures work. Sessions are no longer free-floating per-employee chats — they're either **task-bound** (attached to a Kanban card) or **untracked** (today's sidebar-initiated behavior). Multiple **Organisations** can coexist, each with its own Kanban, employees, cron jobs, and skills.
 
 ### ✨ Features
-- **Organisations as the top-level container** — every Org has its own employees, Kanban, cron, and skills overlay. Sidebar shows an Organisation switcher (persists selection to localStorage). First-boot migration creates a single "Default" Organisation from the existing `~/.jinn/org/` directory.
+- **Organisations as the top-level container** — every Org has its own employees, Kanban, cron, and skills overlay. Sidebar shows an Organisation switcher (persists selection to localStorage). First-boot migration creates a single "Default" Organisation from the existing `~/.jinn/org/` directory; the operator renames / re-leads it via the new settings panel.
 - **Six-column Kanban backed by the gateway DB** — Backlog → To Do → In Progress → Waiting → Review → Done. Drag-drop persists via `PATCH /api/tasks/:id`. Replaces the v0.13.x localStorage prototype; legacy data is cleared with a one-time toast.
 - **Auto-picker per Organisation** — watches the To Do column and dispatches up to `wip_cap` tasks to the configured lead employee. WIP cap counts In Progress + Review only; Waiting parks the task on a human and frees a slot. Soft on cap-down, immediate on cap-up. Default cap is 3.
 - **60-second reconciler** — sweeps non-terminal tasks for wedged lead sessions (paused, errored, archived, missing) and flips them to `stalled` so the UI surfaces a re-dispatch banner.
@@ -16,7 +16,7 @@ A major rework of how Jinn structures work. Sessions are no longer free-floating
 - **Skills dual-scope** — per-Org overlay at `~/.jinn/organisations/<id>/skills/` wins over global `~/.jinn/skills/` on name collision, mirroring Claude Code's `.claude/skills/` precedence.
 
 ### 🪄 Delegation protocol rewrite
-- **Identity line uses the employee's actual rank/department** (was hardcoded "You are the COO" even for mid-tier managers like `manager-charlie`).
+- **Identity line uses the employee's actual rank/department** (was hardcoded "You are the COO" even for mid-tier managers who delegate downward).
 - **Per-task reuse rule** documented alongside per-employee reuse: one chat per `(employee, task_id)`.
 - **Promoted from OPTIONAL → STANDARD tier** so the per-task uniqueness invariant doesn't get silently trimmed under budget pressure.
 - **Delegation audit-trail rows** — every parent-spawned child writes a `role='delegation'` row into the parent's messages table with child id + employee + task id + prompt preview. Lets Jinn reconstruct delegation timelines without parsing Claude's JSONL.
@@ -35,7 +35,7 @@ A major rework of how Jinn structures work. Sessions are no longer free-floating
 See [`packages/jimmy/template/migrations/0.14.0/MIGRATION.md`](packages/jimmy/template/migrations/0.14.0/MIGRATION.md) for the full cutover procedure. **TL;DR**:
 1. Stop the gateway. Back up `~/.jinn/`.
 2. Wipe `sessions/registry.db`, `tmp/`, `logs/*.log`, and top-level cruft (the migration assumes a fresh DB).
-3. `pnpm build` and restart. First boot creates the Default Organisation and moves your org dir into it.
+3. `pnpm build` and restart. First boot creates a single "Default" Organisation and moves your org dir into it.
 4. Re-onboard your team (one paragraph brief — see the migration doc).
 5. File initial Kanban tasks per the seed list.
 

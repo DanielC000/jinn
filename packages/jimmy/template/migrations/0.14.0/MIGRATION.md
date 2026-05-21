@@ -46,10 +46,9 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.jinn\.claude" -ErrorAction Silent
 Remove-Item -Recurse -Force "$env:USERPROFILE\.jinn\.agents" -ErrorAction SilentlyContinue
 Remove-Item -Force "$env:USERPROFILE\.jinn\logs\*.log"
 
-# Top-level cruft from accidental shell redirects
-$cruft = @('=4.7','=95%','Deploy','Packaging','Default','Shipping','Unpacking','Verifying')
-foreach ($f in $cruft) { Remove-Item -Force "$env:USERPROFILE\.jinn\$f" -ErrorAction SilentlyContinue }
-Get-ChildItem "$env:USERPROFILE\.jinn" -Filter "CUsersdanie*" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# Top-level cruft from accidental shell redirects (extend with the
+# zero-byte / mojibake filenames you find in your own JINN_HOME).
+Get-ChildItem "$env:USERPROFILE\.jinn" -File | Where-Object { $_.Length -eq 0 } | Remove-Item -Force -ErrorAction SilentlyContinue
 ```
 
 ## Boot the new gateway
@@ -63,45 +62,43 @@ pnpm start
 
 The first-boot migration runs automatically (`packages/jimmy/src/sessions/migrations/001-organisations.ts`):
 
-1. Creates one Organisation row named **"Default"** with `lead_employee_id="jinn"` and `wip_cap=3`.
-2. Copies `~/.jinn/org/` → `~/.jinn/organisations/<default-id>/org/` (and removes the source after successful copy).
+1. Creates one Organisation row named **"Default"** with `lead_employee_id=null` and `wip_cap=3`. Rename and set a lead via the settings panel in the sidebar's Organisation switcher.
+2. Copies `~/.jinn/org/` → `~/.jinn/organisations/<id>/org/` (and removes the source after successful copy).
 3. Indexes employees from the moved org dir into the `employees` table.
 4. Indexes cron jobs from `~/.jinn/cron/jobs.json` into `cron_jobs` with `task_mode="untracked"`.
 
 ## Verification checklist (first 5 minutes)
 
-- [ ] `GET /api/organisations` returns one Organisation named "Default", `leadEmployeeId: "jinn"`, `wipCap: 3`.
+- [ ] `GET /api/organisations` returns one Organisation named "Default", `leadEmployeeId: null`, `wipCap: 3`.
 - [ ] `GET /api/organisations/<id>/tasks` returns `[]` (no tasks yet).
 - [ ] UI top of sidebar shows the Organisation switcher with "Default" selected.
+- [ ] Rename "Default" to your project name via the settings panel; assign a lead employee.
 - [ ] `GET /api/skills` (no `organisation` param) returns your global skills as before.
 - [ ] `GET /api/skills?organisation=<id>` returns the same set (no per-Org overlay exists yet).
-- [ ] Open a chat with `jinn` from the sidebar — it spins up, says hello.
-- [ ] System prompt for `jinn` includes the new task-bound delegation protocol (look for "Task-bound vs untracked" section).
-- [ ] Skills are visible at `/api/skills` (10 expected).
-- [ ] Cron job `usage-limit-wake` is still in `~/.jinn/cron/jobs.json` (disabled).
+- [ ] Open a chat with one of your employees from the sidebar — it spins up.
+- [ ] System prompt for the employee includes the new task-bound delegation protocol (look for "Task-bound vs untracked" section).
 
 ## Re-onboarding the team
 
-Send Jinn a single message:
+Send a single message to your lead / COO-equivalent:
 
-> The new workflow is live. Read `Projects/Jinn/Project-Scoped Task-Bound Workflow.md` in the vault for the full design. The short version:
+> The new workflow is live. The short version:
 >
 > - Task-bound sessions: when the auto-picker dispatches you a task from the Kanban, your session is bound to that task. Iteration happens inside the open task. Closing the task archives all involved sessions together.
 > - Use the `create_task` tool (`POST /api/sessions/<your-id>/tools/create-task`) to file work onto the Kanban. Default destination is Backlog; promote to To Do when ready for the auto-picker.
 > - Untracked chats (sidebar-initiated, no task) still work exactly as before for quick pings.
-> - WIP cap is 3 — that's how many tasks the team works on concurrently.
+> - WIP cap is configurable per Organisation — that's how many tasks the team works on concurrently.
 >
-> Echo this brief to Sasha (`director-delta`) and Leon (`lead-alpha`) so they can brief their reports.
+> Brief your direct reports on the same.
 
 ## Initial Kanban seed
 
 File these in Backlog and promote to To Do as you're ready (these are validation tasks for the new system — run them before doing real work):
 
-1. **Verify delegation-event rows.** `lead-bravo`. Spawn a single child via the new protocol; check the parent's messages table contains a `role='delegation'` row. To Do.
-2. **Verify notification taskId.** `lead-bravo`. Reply from a task-bound child; check the parent notification contains `[Task: "<title>"]`. To Do.
-3. **Test the WIP cap.** `manager-charlie`. File three trivial tasks at once; first should dispatch immediately, second when the first hits Waiting/Done. To Do.
-4. **Test the reconciler.** `lead-bravo`. Kill the lead session mid-task; verify the 60s reconciler marks the task `stalled` and the UI banner appears. To Do.
-5. **Re-enable cron `usage-limit-wake`** if Anthropic's claude -p deadline is still in play. Backlog until decision.
+1. **Verify delegation-event rows.** Spawn a single child via the new protocol; check the parent's messages table contains a `role='delegation'` row. To Do.
+2. **Verify notification taskId.** Reply from a task-bound child; check the parent notification contains `[Task: "<title>"]`. To Do.
+3. **Test the WIP cap.** File three trivial tasks at once; first should dispatch immediately, second when the first hits Waiting/Done. To Do.
+4. **Test the reconciler.** Kill the lead session mid-task; verify the 60s reconciler marks the task `stalled` and the UI banner appears. To Do.
 
 ## What's NOT in scope for this migration
 

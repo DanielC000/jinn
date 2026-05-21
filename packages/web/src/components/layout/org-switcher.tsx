@@ -179,7 +179,7 @@ function CreateOrganisationModal({
               autoFocus
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. downstream"
+              placeholder="e.g. Engineering"
               className="rounded border border-border bg-[var(--bg)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
             />
           </label>

@@ -6,8 +6,9 @@ import { useQuery } from "@tanstack/react-query"
  *
  * - Loaded from GET /api/organisations once on mount.
  * - The active selection persists in localStorage so it survives reload.
- * - Defaults to the first Organisation (today's only one is "Default" from
- *   the Phase 1 first-boot migration).
+ * - Defaults to the first Organisation (the Phase 1 first-boot migration
+ *   creates a single "Default" Organisation; the operator renames it via
+ *   the settings panel).
  * - When the active id is unknown (e.g. localStorage stale, fictional id from
  *   a test fixture), we keep the id but the API returns zero rows — confirms
  *   the filter works.
@@ -59,7 +60,7 @@ export function CurrentOrganisationProvider({ children }: { children: ReactNode 
   useEffect(() => {
     if (!data || data.length === 0) return
     if (currentId && data.some((o) => o.id === currentId)) return
-    // Default to the first Organisation (Default in single-Org installs).
+    // Default to the first Organisation.
     const next = data[0]?.id ?? null
     setCurrentIdState(next)
     if (next && typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEY, next)

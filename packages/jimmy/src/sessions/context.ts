@@ -188,9 +188,8 @@ export function buildContext(opts: {
   // Phase 5: section is promoted from OPTIONAL → STANDARD so per-task reuse
   // semantics don't get silently trimmed under budget pressure. The prompt is
   // built around the calling employee's actual rank/department; the legacy
-  // "You are the COO" hardcode was misleading for mid-tier managers like
-  // manager-charlie (dept-charlie). Phase 5 audits the live delegation chain
-  // (cora-aaron-henrik) showed agents internalize the wrong identity.
+  // "You are the COO" hardcode was misleading for any non-executive employee
+  // who delegates downward (mid-tier managers and senior leads).
   const hasReports =
     !opts.employee ||
     (opts.hierarchy?.nodes[opts.employee.name]?.directReports?.length ?? 0) > 0;

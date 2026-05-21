@@ -18,7 +18,8 @@ import {
  * boots no-op. Safe to call on every gateway start.
  *
  * Steps:
- *   1. Create one Organisation row named "Default" with lead_employee_id="jinn".
+ *   1. Create one Organisation row named "Default" with no lead employee.
+ *      The operator picks a lead via the UI / `PATCH /api/organisations/:id`.
  *   2. If ~/.jinn/org/ exists, copy it into ~/.jinn/organisations/<id>/org/
  *      and remove the source (copy-then-delete so an interrupted move can be
  *      detected and retried). Drop a .migrated flag inside the new dir so a
@@ -26,11 +27,11 @@ import {
  *   3. Scan the new (or pre-existing) org dir, populate the `employees`
  *      synthetic-index table for FK targets.
  *   4. Load ~/.jinn/cron/jobs.json into the `cron_jobs` index attached to the
- *      Default Organisation, default task_mode="untracked" (today's behavior).
+ *      default Organisation, with task_mode="untracked" (today's behavior).
  */
 
 export const DEFAULT_ORG_NAME = "Default";
-export const DEFAULT_ORG_LEAD = "jinn";
+export const DEFAULT_ORG_LEAD: string | null = null;
 export const DEFAULT_ORG_WIP_CAP = 3;
 
 export interface MigrationResult {

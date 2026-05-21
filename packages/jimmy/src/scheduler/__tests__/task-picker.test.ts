@@ -23,6 +23,8 @@ describe("Phase 6 task picker", () => {
 
   test("dispatches To Do tasks up to the WIP cap (default 3)", async () => {
     const { registry, orgId } = await withFreshOrg();
+    // Assign a lead so the picker has someone to dispatch to.
+    registry.updateOrganisation(orgId, { leadEmployeeId: "lead-alpha" });
     // Create 5 To Do tasks
     for (const t of ["A", "B", "C", "D", "E"]) {
       registry.createTask({ organisationId: orgId, title: t, status: "todo" });
@@ -41,13 +43,14 @@ describe("Phase 6 task picker", () => {
     for (const t of inProgress) {
       expect(t.leadSessionId).toBeTruthy();
       const sess = registry.getSession(t.leadSessionId!);
-      expect(sess?.employee).toBe("jinn"); // Default's default lead
+      expect(sess?.employee).toBe("lead-alpha");
       expect(sess?.taskId).toBe(t.id);
     }
   });
 
   test("a task in Waiting does not consume a WIP slot", async () => {
     const { registry, orgId } = await withFreshOrg();
+    registry.updateOrganisation(orgId, { leadEmployeeId: "lead-alpha" });
     // Fill running slots
     for (const _ of [1, 2]) {
       const t = registry.createTask({ organisationId: orgId, title: "running", status: "in-progress" });
@@ -79,6 +82,7 @@ describe("Phase 6 task picker", () => {
 
   test("reconciler marks a task stalled when its lead session enters error", async () => {
     const { registry, orgId } = await withFreshOrg();
+    registry.updateOrganisation(orgId, { leadEmployeeId: "lead-alpha" });
     const task = registry.createTask({ organisationId: orgId, title: "T", status: "todo" });
     const { pickOnce } = await import("../task-picker.js");
     pickOnce();

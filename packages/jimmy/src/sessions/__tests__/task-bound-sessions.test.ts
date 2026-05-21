@@ -35,7 +35,7 @@ describe("Phase 5 task-bound sessions", () => {
       engine: "claude",
       source: "web",
       sourceRef: "web:1",
-      employee: "lead-bravo",
+      employee: "lead-alpha",
       organisationId: orgId,
       taskId: task.id,
       employeeId: "emp-1",
@@ -53,11 +53,11 @@ describe("Phase 5 task-bound sessions", () => {
       engine: "claude",
       source: "web",
       sourceRef: "web:a",
-      employee: "lead-bravo",
+      employee: "lead-alpha",
       organisationId: orgId,
       taskId: task.id,
     });
-    const found = registry.findChildSessionByEmployeeAndTask("lead-bravo", task.id);
+    const found = registry.findChildSessionByEmployeeAndTask("lead-alpha", task.id);
     expect(found?.id).toBe(first.id);
   });
 
@@ -68,12 +68,12 @@ describe("Phase 5 task-bound sessions", () => {
       engine: "claude",
       source: "web",
       sourceRef: "web:a",
-      employee: "lead-bravo",
+      employee: "lead-alpha",
       organisationId: orgId,
       taskId: task.id,
     });
     registry.updateSession(first.id, { status: "archived" });
-    expect(registry.findChildSessionByEmployeeAndTask("lead-bravo", task.id)).toBeUndefined();
+    expect(registry.findChildSessionByEmployeeAndTask("lead-alpha", task.id)).toBeUndefined();
   });
 
   test("different tasks produce different sessions for the same employee", async () => {
@@ -84,7 +84,7 @@ describe("Phase 5 task-bound sessions", () => {
       engine: "claude",
       source: "web",
       sourceRef: "web:a",
-      employee: "backend-echo",
+      employee: "backend-bravo",
       organisationId: orgId,
       taskId: tA.id,
     });
@@ -92,12 +92,12 @@ describe("Phase 5 task-bound sessions", () => {
       engine: "claude",
       source: "web",
       sourceRef: "web:b",
-      employee: "backend-echo",
+      employee: "backend-bravo",
       organisationId: orgId,
       taskId: tB.id,
     });
     expect(a.id).not.toBe(b.id);
-    expect(registry.findChildSessionByEmployeeAndTask("backend-echo", tA.id)?.id).toBe(a.id);
-    expect(registry.findChildSessionByEmployeeAndTask("backend-echo", tB.id)?.id).toBe(b.id);
+    expect(registry.findChildSessionByEmployeeAndTask("backend-bravo", tA.id)?.id).toBe(a.id);
+    expect(registry.findChildSessionByEmployeeAndTask("backend-bravo", tB.id)?.id).toBe(b.id);
   });
 });

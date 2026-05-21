@@ -3074,8 +3074,8 @@ async function runWebSession(
       lastActivity: new Date().toISOString(),
       lastError: errMsg,
     });
-    // Surface the failure to the parent — silent child errors were the worst
-    // part of the 29-hour downstream stall on 2026-05-19.
+    // Surface the failure to the parent — silent child errors caused a
+    // multi-hour delegation stall in a prior incident.
     if (erroredSession) {
       notifyParentSession(erroredSession, { error: errMsg }, { alwaysNotify: employee?.alwaysNotify });
     }

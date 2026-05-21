@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
  * Phase 1 first-boot migration smoke tests.
  *
  * The migration touches three concerns:
- *   1. Creates the Default Organisation when the table is empty.
+ *   1. Creates the default Organisation when the table is empty.
  *   2. Moves a legacy ~/.jinn/org/ directory into ~/.jinn/organisations/<id>/org/.
  *   3. Populates the employees + cron_jobs synthetic indexes.
  *
@@ -45,7 +45,7 @@ describe("Phase 1 migration: 001-organisations", () => {
     else process.env.JINN_HOME = originalHome;
   });
 
-  test("creates Default Organisation when the table is empty", async () => {
+  test("creates the default Organisation when the table is empty", async () => {
     const { migration, registry } = await withFreshHome();
     const result = migration.runOrganisationsMigration();
     expect(result.ran).toBe(true);
@@ -70,7 +70,7 @@ describe("Phase 1 migration: 001-organisations", () => {
     const legacyOrg = path.join(tmp, "org");
     writeYaml(path.join(legacyOrg, "engineering", "lead-alpha.yaml"), {
       name: "lead-alpha",
-      displayName: "Leon",
+      displayName: "Alpha",
       department: "engineering",
       rank: "senior",
       persona: "Eng lead",
