@@ -1,6 +1,5 @@
-import { lazy, Suspense, useEffect, useState, useRef, useCallback } from "react";
-import { api } from "@/lib/api";
-import type { Employee, OrgData, OrgHierarchy } from "@/lib/api";
+import { lazy, Suspense, useEffect, useMemo, useState, useRef, useCallback } from "react";
+import type { Employee } from "@/lib/api";
 import { EmployeeDetail } from "@/components/org/employee-detail";
 import { GridView } from "@/components/org/grid-view";
 import { FeedView } from "@/components/org/feed-view";
@@ -9,6 +8,7 @@ import { PageLayout } from "@/components/page-layout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useSettings } from "@/routes/settings-provider";
 import { useBreadcrumbs } from "@/context/breadcrumb-context";
+import { useOrg } from "@/hooks/use-employees";
 
 const OrgMap = lazy(() =>
   import("@/components/org/org-map").then((m) => ({ default: m.OrgMap })),
@@ -22,40 +22,31 @@ const OrgMapFallback = (
 
 export default function OrgPage() {
   useBreadcrumbs([{ label: 'Organization' }])
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [hierarchy, setHierarchy] = useState<OrgHierarchy | undefined>();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Employee | null>(null);
   const [view, setView] = useState<string>("map");
   const closeRef = useRef<HTMLButtonElement>(null);
   const { settings } = useSettings();
 
-  const loadData = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    api
-      .getOrg()
-      .then((data: OrgData) => {
-        const coo: Employee = {
-          name: (settings.portalName ?? "Jinn").toLowerCase(),
-          displayName: settings.portalName ?? "Jinn",
-          department: "",
-          rank: "executive",
-          engine: "claude",
-          model: "opus",
-          persona: "COO and AI gateway daemon",
-        };
-        setEmployees([coo, ...data.employees]);
-        setHierarchy(data.hierarchy);
-      })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [settings.portalName]);
+  // useOrg() reads useCurrentOrganisationId() and calls /api/org?organisation=<id>.
+  // Without this the page would hit /api/org with no query, falling through to
+  // scanOrg() server-side which unions every Organisation's employees.
+  const { data, isLoading: loading, error, refetch } = useOrg();
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  const employees = useMemo<Employee[]>(() => {
+    if (!data) return [];
+    const coo: Employee = {
+      name: (settings.portalName ?? "Jinn").toLowerCase(),
+      displayName: settings.portalName ?? "Jinn",
+      department: "",
+      rank: "executive",
+      engine: "claude",
+      model: "opus",
+      persona: "COO and AI gateway daemon",
+    };
+    return [coo, ...data.employees];
+  }, [data, settings.portalName]);
+
+  const hierarchy = data?.hierarchy;
 
   // Focus close button when panel opens
   useEffect(() => {
@@ -84,10 +75,10 @@ export default function OrgPage() {
       <PageLayout>
         <div className="flex flex-col items-center justify-center h-full gap-[var(--space-4)] text-[var(--text-tertiary)]">
           <div className="rounded-[var(--radius-md,12px)] px-[var(--space-4)] py-[var(--space-3)] text-[length:var(--text-body)] text-[var(--system-red)]" style={{ background: "color-mix(in srgb, var(--system-red) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--system-red) 30%, transparent)" }}>
-            Failed to load organization: {error}
+            Failed to load organization: {error instanceof Error ? error.message : String(error)}
           </div>
           <button
-            onClick={loadData}
+            onClick={() => refetch()}
             className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md,12px)] bg-[var(--accent)] text-[var(--accent-contrast)] border-none cursor-pointer text-[length:var(--text-body)] font-[var(--weight-semibold)]"
           >
             Retry

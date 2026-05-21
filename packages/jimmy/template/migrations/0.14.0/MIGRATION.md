@@ -107,6 +107,79 @@ File these in Backlog and promote to To Do as you're ready (these are validation
 - **Forgejo/GitHub repo state** — git-managed, untouched.
 - **Whisper STT model** — already on disk (~465 MB).
 
+## Restoring from a multi-tenant `.jinn_backup`
+
+If your pre-cutover `.jinn` already held employees for **two or more logical organisations side-by-side under a single `org/` dir** (the legacy single-tenant model didn't separate them), the first-boot migration above lumps them all into a single "Default" Organisation. To split them into proper per-Org dirs:
+
+### 1. First boot creates one Org
+
+Boot the new gateway. First-boot migration creates one Organisation row and moves the entire backup `org/` under it. Rename that Org to your first logical org (e.g. via the sidebar settings panel).
+
+### 2. Create the second Organisation via the UI
+
+Use the `+ New Organisation…` footer in the sidebar Org switcher, or:
+
+```bash
+curl -X POST http://localhost:7777/api/organisations \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Second Org","wipCap":3}'
+```
+
+This mkdirs `~/.jinn/organisations/<new-id>/org/` so YAMLs can drop in.
+
+### 3. Move the second org's dept dirs
+
+Stop the gateway. Copy the dept dirs that belong to the second Organisation out of the first Org's `org/` and into the second Org's `org/`:
+
+```powershell
+$first  = "$env:USERPROFILE\.jinn\organisations\<first-org-id>\org"
+$second = "$env:USERPROFILE\.jinn\organisations\<second-org-id>\org"
+
+# Adjust the dept list to your layout
+foreach ($dept in @('dept-one', 'dept-two', 'dept-three')) {
+  Move-Item "$first\$dept" "$second\$dept"
+}
+```
+
+### 4. Re-home cross-Org `reportsTo` references
+
+If any employee in the moved dept used `reportsTo: <name-in-the-other-org>` (commonly `reportsTo: jinn` pointing at a COO who lives in the original Org), that reference now dangles — `resolveOrgHierarchy` logs a `broken_ref` warning. Two options:
+
+**Recommended — give each Org its own COO YAML.** Add an `executive/` department to the new Org with a local COO employee whose `name:` matches the dangling `reportsTo:` (commonly the operator's COO persona). The cross-Org reference then resolves locally because `scanOrgFromDir` is per-Org. This keeps personas that reference "(COO)" working in every Org without code changes.
+
+```yaml
+# ~/.jinn/organisations/<new-org-id>/org/executive/<coo-name>.yaml
+name: <coo-name>
+displayName: COO
+department: executive
+rank: executive
+engine: claude
+model: opus
+persona: |
+  You are the COO. You orchestrate departments, delegate to managers,
+  review their work, and report results to the operator.
+```
+
+Plus an `executive/department.yaml`:
+
+```yaml
+name: executive
+displayName: Executive
+description: Oversees all departments.
+```
+
+**Alternative — strip the field.** The employee becomes the Org's new root. Use this when the persona doesn't actually depend on a COO parent. There's no cross-Org delegation in v0.14.0, so a cross-Org `reportsTo:` will never resolve.
+
+### 5. (Optional) Clean up legacy `board.json` clutter
+
+The legacy per-department `board.json` files come along for the ride but are ignored by the task-bound model. Safe to delete.
+
+### 6. Restart and verify
+
+Boot the gateway. Both Organisations should appear in the switcher; switching between them shows only that Org's employees on `/org` and only that Org's tasks on `/kanban`.
+
+> **Note:** if you need to bootstrap the second Organisation **before** the Org CRUD UI shipped (older v0.14.0 builds), insert directly into the `organisations` table via `better-sqlite3` while the gateway is offline. The new endpoint at step 2 is the supported path going forward.
+
 ## Rollback plan
 
 If the new gateway doesn't boot or the migration fails:
