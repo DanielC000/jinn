@@ -127,6 +127,23 @@ export async function startGateway(
   // Initialize database and recover any sessions stuck from a previous run
   initDb();
   ensureFilesDir();
+
+  // First-boot migration for the project-scoped task-bound workflow.
+  // No-ops on subsequent boots once an Organisation row exists.
+  try {
+    const { runOrganisationsMigration } = await import("../sessions/migrations/001-organisations.js");
+    const m = runOrganisationsMigration();
+    if (m.ran) {
+      logger.info(
+        `First-boot migration: created Organisation ${m.organisationId} ` +
+          `(employees: ${m.employeeCount}, cron jobs: ${m.cronJobCount}, moved org/: ${m.movedOrgDir})`,
+      );
+    }
+  } catch (err) {
+    logger.error(`First-boot migration failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+    throw err;
+  }
+
   const recovered = recoverStaleSessions();
   if (recovered > 0) {
     logger.info(`Recovered ${recovered} stale session(s) — marked as "interrupted" for resume`);
@@ -889,9 +906,24 @@ export async function startGateway(
     logger.info("caffeinate started — macOS sleep prevention active");
   }
 
+  // Phase 6: start the task auto-picker + reconciler.
+  const { startTaskPicker } = await import("../scheduler/task-picker.js");
+  const { startTaskReconciler } = await import("../scheduler/task-reconciler.js");
+  const taskPicker = startTaskPicker({
+    emit,
+    isLeadPaused: (sessionKey: string) => sessionManager.getQueue().isPaused(sessionKey),
+    enqueuePrompt: () => {/* enqueue is handled inside picker via registry */ },
+  });
+  const taskReconciler = startTaskReconciler({ emit });
+  logger.info("Task picker + reconciler started");
+
   // Return cleanup function
   return async () => {
     logger.info("Gateway cleanup starting...");
+
+    // Stop the picker + reconciler first so no new dispatches fire during shutdown.
+    taskPicker.stop();
+    taskReconciler.stop();
 
     // Stop caffeinate
     if (caffeinate && caffeinate.exitCode === null) {

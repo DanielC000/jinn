@@ -54,6 +54,50 @@ export interface OrgData {
   hierarchy: OrgHierarchy;
 }
 
+export interface Organisation {
+  id: string;
+  name: string;
+  leadEmployeeId: string | null;
+  wipCap: number;
+  createdAt: string;
+}
+
+export type TaskStatus =
+  | "backlog"
+  | "todo"
+  | "in-progress"
+  | "waiting"
+  | "review"
+  | "done"
+  | "stalled";
+
+export type TaskPriority = "low" | "med" | "high";
+
+export interface Task {
+  id: string;
+  organisationId: string;
+  title: string;
+  description: string;
+  priority: TaskPriority;
+  status: TaskStatus;
+  leadSessionId: string | null;
+  supersedesTaskId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+}
+
+/**
+ * Helper: append `organisation=<id>` to a URL. Existing query string is preserved.
+ * Returns the URL unchanged when no organisationId is provided so consumers can
+ * pass `undefined` to opt out of filtering.
+ */
+function withOrg(path: string, organisationId?: string | null): string {
+  if (!organisationId) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}organisation=${encodeURIComponent(organisationId)}`;
+}
+
 const BASE =
   typeof window !== "undefined"
     ? window.location.origin
@@ -120,15 +164,35 @@ export interface SessionsResponse {
 
 export const api = {
   getStatus: () => get<Record<string, unknown>>("/api/status"),
-  getSessions: () => get<SessionsResponse>("/api/sessions"),
+  /** Phase 2: list Organisations. */
+  getOrganisations: () => get<Organisation[]>("/api/organisations"),
+  /** Phase 6: update an Organisation (name, lead, wip cap). */
+  updateOrganisation: (id: string, data: { name?: string; leadEmployeeId?: string | null; wipCap?: number }) => {
+    return fetch(`${BASE}/api/organisations/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(await extractErrorMessage(res));
+      return res.json() as Promise<Organisation>;
+    });
+  },
+  /** Phase 6: redispatch a stalled task back to To Do. */
+  redispatchTask: (id: string) =>
+    post<Task>(`/api/tasks/${encodeURIComponent(id)}/redispatch`, {}),
+  getSessions: (organisationId?: string | null) =>
+    get<SessionsResponse>(withOrg("/api/sessions", organisationId)),
   /** One group's sessions, newest first — used by the sidebar "load more" button. */
-  getSessionsForGroup: (group: string, offset: number, limit = 50) =>
+  getSessionsForGroup: (group: string, offset: number, limit = 50, organisationId?: string | null) =>
     get<Record<string, unknown>[]>(
-      `/api/sessions?group=${encodeURIComponent(group)}&offset=${offset}&limit=${limit}`,
+      withOrg(
+        `/api/sessions?group=${encodeURIComponent(group)}&offset=${offset}&limit=${limit}`,
+        organisationId,
+      ),
     ),
   /** Search across ALL sessions (title / employee / id), newest first. */
-  searchSessions: (query: string) =>
-    get<Record<string, unknown>[]>(`/api/sessions?q=${encodeURIComponent(query)}`),
+  searchSessions: (query: string, organisationId?: string | null) =>
+    get<Record<string, unknown>[]>(withOrg(`/api/sessions?q=${encodeURIComponent(query)}`, organisationId)),
   getSession: (id: string) => get<Record<string, unknown>>(`/api/sessions/${id}`),
   getSessionChildren: (id: string) => get<Record<string, unknown>[]>(`/api/sessions/${id}/children`),
   updateSession: (id: string, data: { title?: string; autoSplitDisabled?: boolean }) =>
@@ -152,13 +216,51 @@ export const api = {
     post<{ status: string; sessionId: string; dispatched: number }>(`/api/sessions/${id}/resume`, {}),
   resetSession: (id: string) =>
     post<{ status: string; sessionId: string }>(`/api/sessions/${id}/reset`, {}),
-  getCronJobs: () => get<Record<string, unknown>[]>("/api/cron"),
+  getCronJobs: (organisationId?: string | null) =>
+    get<Record<string, unknown>[]>(withOrg("/api/cron", organisationId)),
   getCronRuns: (id: string) => get<Record<string, unknown>[]>(`/api/cron/${id}/runs`),
   updateCronJob: (id: string, data: Record<string, unknown>) =>
     put<Record<string, unknown>>(`/api/cron/${id}`, data),
   triggerCronJob: (id: string) =>
     post<Record<string, unknown>>(`/api/cron/${id}/trigger`, {}),
-  getOrg: () => get<OrgData>("/api/org"),
+  getOrg: (organisationId?: string | null) => get<OrgData>(withOrg("/api/org", organisationId)),
+  // ── Tasks (Phase 3+) ────────────────────────────────────────────
+  getTasks: (organisationId: string, status?: TaskStatus) =>
+    get<Task[]>(`/api/organisations/${encodeURIComponent(organisationId)}/tasks${status ? `?status=${status}` : ""}`),
+  createTask: (
+    organisationId: string,
+    data: {
+      title: string;
+      description?: string;
+      priority?: TaskPriority;
+      status?: TaskStatus;
+      supersedesTaskId?: string | null;
+    },
+  ) =>
+    post<Task>(`/api/organisations/${encodeURIComponent(organisationId)}/tasks`, data),
+  getTask: (id: string) => get<Task>(`/api/tasks/${encodeURIComponent(id)}`),
+  updateTask: (
+    id: string,
+    data: {
+      title?: string;
+      description?: string;
+      priority?: TaskPriority;
+      status?: TaskStatus;
+      leadSessionId?: string | null;
+    },
+  ) => {
+    // Use PATCH for partial updates (matches the backend endpoint).
+    return fetch(`${BASE}/api/tasks/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(await extractErrorMessage(res));
+      return res.json() as Promise<Task>;
+    });
+  },
+  closeTask: (id: string) => post<Task>(`/api/tasks/${encodeURIComponent(id)}/close`, {}),
+  deleteTask: (id: string) => del<{ status: string }>(`/api/tasks/${encodeURIComponent(id)}`),
   getEmployee: (name: string) => get<Employee>(`/api/org/employees/${name}`),
   getDepartmentBoard: (name: string) =>
     get<Record<string, unknown>>(`/api/org/departments/${name}/board`),

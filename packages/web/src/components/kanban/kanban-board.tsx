@@ -1,14 +1,13 @@
 
 import { COLUMNS } from '@/lib/kanban/types'
 import type { KanbanTicket, TicketStatus } from '@/lib/kanban/types'
-import type { KanbanStore } from '@/lib/kanban/store'
-import { getTicketsByStatus } from '@/lib/kanban/store'
 import type { Employee } from '@/lib/api'
 import { KanbanColumn } from './kanban-column'
 import { TicketCard } from './ticket-card'
 
 interface KanbanBoardProps {
-  tickets: KanbanStore
+  /** Phase 4: now a flat array of tickets (was a KanbanStore record). */
+  tickets: KanbanTicket[]
   employees: Employee[]
   onTicketClick: (ticket: KanbanTicket) => void
   onMoveTicket: (ticketId: string, status: TicketStatus) => void
@@ -39,7 +38,9 @@ export function KanbanBoard({
       }}
     >
       {COLUMNS.map((column) => {
-        const allColumnTickets = getTicketsByStatus(tickets, column.id)
+        const allColumnTickets = tickets
+          .filter((t) => t.status === column.id)
+          .sort((a, b) => b.updatedAt - a.updatedAt)
         const columnTickets = filterEmployeeId
           ? allColumnTickets.filter((t) => t.assigneeId === filterEmployeeId)
           : allColumnTickets

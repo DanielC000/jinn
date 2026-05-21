@@ -18,6 +18,17 @@ export const SESSIONS_DB = path.join(JINN_HOME, "sessions", "registry.db");
 export const CRON_JOBS = path.join(JINN_HOME, "cron", "jobs.json");
 export const CRON_RUNS = path.join(JINN_HOME, "cron", "runs");
 export const ORG_DIR = path.join(JINN_HOME, "org");
+export const ORGANISATIONS_DIR = path.join(JINN_HOME, "organisations");
+
+/** Path to the per-Organisation org/ directory. */
+export function organisationOrgDir(organisationId: string): string {
+  return path.join(ORGANISATIONS_DIR, organisationId, "org");
+}
+
+/** Path to the per-Organisation skills overlay. */
+export function organisationSkillsDir(organisationId: string): string {
+  return path.join(ORGANISATIONS_DIR, organisationId, "skills");
+}
 export const SKILLS_DIR = path.join(JINN_HOME, "skills");
 export const DOCS_DIR = path.join(JINN_HOME, "docs");
 export const LOGS_DIR = path.join(JINN_HOME, "logs");

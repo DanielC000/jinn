@@ -173,6 +173,12 @@ export interface Session {
   summaryPrompt: string | null;
   /** When true, auto-split logic skips this session even if it crosses thresholds. */
   autoSplitDisabled: boolean;
+  /** Organisation this session belongs to. Becomes NOT NULL after phase 5; legacy rows are null. */
+  organisationId: string | null;
+  /** Task this session is bound to. Null = untracked session (sidebar-initiated). */
+  taskId: string | null;
+  /** Employee FK (parallel to legacy free-text `employee`). Dropped in phase 9. */
+  employeeId: string | null;
   /**
    * Computed: true when this session has crossed the auto-split threshold and
    * is not yet archived/disabled. Surfaced by the API so the UI can render a
@@ -215,6 +221,55 @@ export interface CronJob {
   employee?: string;
   prompt: string;
   delivery?: CronDelivery;
+  /** Organisation this job runs under. Populated by the first-boot migration on existing jobs. */
+  organisationId?: string;
+  /**
+   * How this job interacts with the task system:
+   *   - "untracked"   — (default) spawn a one-shot session with no task_id, today's behavior.
+   *   - "create-task" — on fire, create a task (Backlog or To Do per config) and stop.
+   *   - "resume-task" — on fire, dispatch the prompt to taskId's lead session.
+   */
+  taskMode?: "untracked" | "create-task" | "resume-task";
+  /** When taskMode = "resume-task", the task to resume. */
+  taskId?: string;
+}
+
+/** Top-level container. A user has one or more Organisations and switches between them in the UI. */
+export interface Organisation {
+  id: string;
+  name: string;
+  /** Employee the auto-picker dispatches To Do tasks to. References Employee.name. */
+  leadEmployeeId: string | null;
+  /** Maximum number of tasks the auto-picker keeps in In Progress + Review concurrently. */
+  wipCap: number;
+  createdAt: string;
+}
+
+export type TaskStatus =
+  | "backlog"
+  | "todo"
+  | "in-progress"
+  | "waiting"
+  | "review"
+  | "done"
+  | "stalled";
+
+export type TaskPriority = "low" | "med" | "high";
+
+export interface Task {
+  id: string;
+  organisationId: string;
+  title: string;
+  description: string;
+  priority: TaskPriority;
+  status: TaskStatus;
+  /** Lead employee's session for this task. Set by the picker on dispatch. */
+  leadSessionId: string | null;
+  /** Optional link to the task this one replaces (e.g. "follow-up to closed task X"). */
+  supersedesTaskId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
 }
 
 export interface CronDelivery {
