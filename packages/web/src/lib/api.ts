@@ -166,6 +166,11 @@ export const api = {
   getStatus: () => get<Record<string, unknown>>("/api/status"),
   /** Phase 2: list Organisations. */
   getOrganisations: () => get<Organisation[]>("/api/organisations"),
+  /** Phase 2 follow-up: create a new Organisation. */
+  createOrganisation: (data: { name: string; leadEmployeeId?: string | null; wipCap?: number }) =>
+    post<Organisation>("/api/organisations", data),
+  /** Phase 2 follow-up: delete an Organisation (refuses when it owns tasks or active sessions). */
+  deleteOrganisation: (id: string) => del<{ status: string }>(`/api/organisations/${encodeURIComponent(id)}`),
   /** Phase 6: update an Organisation (name, lead, wip cap). */
   updateOrganisation: (id: string, data: { name?: string; leadEmployeeId?: string | null; wipCap?: number }) => {
     return fetch(`${BASE}/api/organisations/${encodeURIComponent(id)}`, {

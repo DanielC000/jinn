@@ -1521,6 +1521,100 @@ export async function handleApiRequest(
       return json(res, orgs);
     }
 
+    // POST /api/organisations — create a new Organisation. (Phase 2 follow-up)
+    // Body: { name, leadEmployeeId?, wipCap? }
+    // Side-effect: creates ~/.jinn/organisations/<id>/org/ directory on disk so
+    //              employee YAMLs can be dropped in.
+    if (method === "POST" && pathname === "/api/organisations") {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+      if (typeof body.name !== "string" || !body.name.trim()) {
+        return badRequest(res, "name is required");
+      }
+      const { listOrganisations, createOrganisation } = await import("../sessions/registry.js");
+      const { organisationOrgDir } = await import("../shared/paths.js");
+      const existing = listOrganisations();
+      if (existing.some((o) => o.name.toLowerCase() === body.name.trim().toLowerCase())) {
+        return json(res, { error: `Organisation "${body.name.trim()}" already exists` }, 409);
+      }
+      const wipCap = body.wipCap === undefined ? 3 : Number(body.wipCap);
+      if (!Number.isFinite(wipCap) || wipCap < 1) {
+        return badRequest(res, "wipCap must be a positive integer");
+      }
+      const leadEmployeeId = body.leadEmployeeId === undefined ? null : body.leadEmployeeId;
+      if (leadEmployeeId !== null && typeof leadEmployeeId !== "string") {
+        return badRequest(res, "leadEmployeeId must be a string or null");
+      }
+      const org = createOrganisation({
+        name: body.name.trim(),
+        leadEmployeeId,
+        wipCap: Math.floor(wipCap),
+      });
+      // Provision the on-disk dir so employees can be added.
+      try {
+        fs.mkdirSync(organisationOrgDir(org.id), { recursive: true });
+      } catch (err) {
+        logger.warn(`Failed to mkdir ${organisationOrgDir(org.id)}: ${err}`);
+      }
+      context.emit("organisation:created", { organisation: org });
+      logger.info(`[organisations] Created "${org.name}" (${org.id})`);
+      return json(res, org, 201);
+    }
+
+    // DELETE /api/organisations/:id — refuses when the Org owns any tasks or
+    // non-archived sessions (returns 409 with counts). On success removes the
+    // DB row plus the on-disk ~/.jinn/organisations/<id>/ directory tree.
+    params = matchRoute("/api/organisations/:id", pathname);
+    if (method === "DELETE" && params) {
+      const {
+        getOrganisation,
+        listOrganisations,
+        listTasks,
+        listSessions,
+      } = await import("../sessions/registry.js");
+      const org = getOrganisation(params.id);
+      if (!org) return notFound(res);
+
+      const tasks = listTasks({ organisationId: params.id });
+      const sessions = listSessions({ organisationId: params.id });
+      const activeSessions = sessions.filter((s) => s.status !== "archived");
+      if (tasks.length > 0 || activeSessions.length > 0) {
+        return json(res, {
+          error: "Organisation has open work — close tasks and archive sessions before deleting",
+          tasks: tasks.length,
+          activeSessions: activeSessions.length,
+        }, 409);
+      }
+
+      // Refuse to delete the last Organisation; the UI assumes at least one exists.
+      if (listOrganisations().length <= 1) {
+        return json(res, { error: "Cannot delete the last Organisation" }, 409);
+      }
+
+      const { ORGANISATIONS_DIR } = await import("../shared/paths.js");
+      const db = (await import("../sessions/registry.js")).initDb();
+      // Cascade: drop synthetic-index rows tied to this Org first.
+      db.prepare("DELETE FROM employees WHERE organisation_id = ?").run(params.id);
+      db.prepare("DELETE FROM cron_jobs WHERE organisation_id = ?").run(params.id);
+      db.prepare("DELETE FROM organisations WHERE id = ?").run(params.id);
+
+      // Best-effort cleanup of the on-disk dir.
+      try {
+        const orgDir = path.join(ORGANISATIONS_DIR, params.id);
+        if (fs.existsSync(orgDir)) {
+          fs.rmSync(orgDir, { recursive: true, force: true });
+        }
+      } catch (err) {
+        logger.warn(`Failed to remove org dir for ${params.id}: ${err}`);
+      }
+
+      context.emit("organisation:deleted", { organisationId: params.id });
+      logger.info(`[organisations] Deleted "${org.name}" (${params.id})`);
+      return json(res, { status: "ok" });
+    }
+
     // GET /api/organisations/:id — single Organisation detail (Phase 1: read-only).
     params = matchRoute("/api/organisations/:id", pathname);
     if (method === "GET" && params) {
