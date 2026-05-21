@@ -1659,6 +1659,35 @@ export async function handleApiRequest(
       return json(res, updated);
     }
 
+    // POST /api/organisations/:id/reindex-employees — walk ~/.jinn/organisations/<id>/org/
+    // and upsert every YAML into the synthetic `employees` index. Idempotent.
+    // Needed after manual restore paths (or any time YAMLs are added/edited
+    // outside the first-boot migration). Returns { scanned, inserted, updated }.
+    params = matchRoute("/api/organisations/:id/reindex-employees", pathname);
+    if (method === "POST" && params) {
+      const { getOrganisation, upsertEmployeeIndex, listEmployeeIndex } = await import("../sessions/registry.js");
+      const { organisationOrgDir } = await import("../shared/paths.js");
+      const { scanOrgFromDir } = await import("./org.js");
+      const org = getOrganisation(params.id);
+      if (!org) return notFound(res);
+      const before = new Set(listEmployeeIndex(params.id).map((e) => e.name));
+      const orgDir = organisationOrgDir(params.id);
+      const scanned = scanOrgFromDir(orgDir);
+      let inserted = 0;
+      let updated = 0;
+      for (const [, emp] of scanned) {
+        upsertEmployeeIndex(params.id, {
+          name: emp.name,
+          displayName: emp.displayName,
+          department: emp.department,
+          rank: emp.rank,
+        });
+        if (before.has(emp.name)) updated += 1;
+        else inserted += 1;
+      }
+      return json(res, { scanned: scanned.size, inserted, updated });
+    }
+
     // ── Tasks API (Phase 3) ────────────────────────────────────────
     // Status transition rules (validated by validateTaskStatusTransition):
     //   backlog ↔ todo ↔ in-progress ↔ waiting ↔ review ↔ done

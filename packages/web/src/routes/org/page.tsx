@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState, useRef, useCallback } from "react";
+import { lazy, Suspense, useEffect, useState, useRef, useCallback } from "react";
 import type { Employee } from "@/lib/api";
 import { EmployeeDetail } from "@/components/org/employee-detail";
 import { GridView } from "@/components/org/grid-view";
@@ -6,7 +6,6 @@ import { FeedView } from "@/components/org/feed-view";
 import { OrgTree } from "@/components/org/org-tree";
 import { PageLayout } from "@/components/page-layout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { useSettings } from "@/routes/settings-provider";
 import { useBreadcrumbs } from "@/context/breadcrumb-context";
 import { useOrg } from "@/hooks/use-employees";
 
@@ -25,27 +24,13 @@ export default function OrgPage() {
   const [selected, setSelected] = useState<Employee | null>(null);
   const [view, setView] = useState<string>("map");
   const closeRef = useRef<HTMLButtonElement>(null);
-  const { settings } = useSettings();
 
   // useOrg() reads useCurrentOrganisationId() and calls /api/org?organisation=<id>.
   // Without this the page would hit /api/org with no query, falling through to
   // scanOrg() server-side which unions every Organisation's employees.
   const { data, isLoading: loading, error, refetch } = useOrg();
 
-  const employees = useMemo<Employee[]>(() => {
-    if (!data) return [];
-    const coo: Employee = {
-      name: (settings.portalName ?? "Jinn").toLowerCase(),
-      displayName: settings.portalName ?? "Jinn",
-      department: "",
-      rank: "executive",
-      engine: "claude",
-      model: "opus",
-      persona: "COO and AI gateway daemon",
-    };
-    return [coo, ...data.employees];
-  }, [data, settings.portalName]);
-
+  const employees = data?.employees ?? [];
   const hierarchy = data?.hierarchy;
 
   // Focus close button when panel opens
