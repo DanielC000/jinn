@@ -1,10 +1,10 @@
 # Changelog
 
-## [0.14.0] - 2026-05-21 — Project-scoped task-bound workflow
+## [0.14.0] - 2026-05-21 — Project-scoped task-bound workflow + Telegram media
 
-A major rework of how Jinn structures work. Sessions are no longer free-floating per-employee chats — they're either **task-bound** (attached to a Kanban card) or **untracked** (today's sidebar-initiated behavior). Multiple **Organisations** can coexist, each with its own Kanban, employees, cron jobs, and skills.
+A major rework of how Jinn structures work. Sessions are no longer free-floating per-employee chats — they're either **task-bound** (attached to a Kanban card) or **untracked** (today's sidebar-initiated behavior). Multiple **Organisations** can coexist, each with its own Kanban, employees, cron jobs, and skills. Includes upstream's Telegram voice transcription + file attachment work (#59, #60).
 
-### ✨ Features
+### ✨ Features (fork)
 - **Organisations as the top-level container** — every Org has its own employees, Kanban, cron, and skills overlay. Sidebar shows an Organisation switcher (persists selection to localStorage). First-boot migration creates a single "Default" Organisation from the existing `~/.jinn/org/` directory; the operator renames / re-leads it via the new settings panel.
 - **Six-column Kanban backed by the gateway DB** — Backlog → To Do → In Progress → Waiting → Review → Done. Drag-drop persists via `PATCH /api/tasks/:id`. Replaces the v0.13.x localStorage prototype; legacy data is cleared with a one-time toast.
 - **Auto-picker per Organisation** — watches the To Do column and dispatches up to `wip_cap` tasks to the configured lead employee. WIP cap counts In Progress + Review only; Waiting parks the task on a human and frees a slot. Soft on cap-down, immediate on cap-up. Default cap is 3.
@@ -14,6 +14,10 @@ A major rework of how Jinn structures work. Sessions are no longer free-floating
 - **`create_task` agent tool** — `POST /api/sessions/:sessionId/tools/create-task`. Restricted to executive/manager ranks (or any employee with `provides.create_task: true`). 20/hour per-session rate limit.
 - **Cron `taskMode`** — `untracked` (default, today's behavior), `create-task` (file a backlog task), `resume-task` (dispatch prompt onto a task's lead session).
 - **Skills dual-scope** — per-Org overlay at `~/.jinn/organisations/<id>/skills/` wins over global `~/.jinn/skills/` on name collision, mirroring Claude Code's `.claude/skills/` precedence.
+
+### ✨ Features (from upstream)
+- **Telegram voice/audio transcription** (#59) — `voice`, `audio`, and `video_note` messages are transcribed through the bundled `stt/stt.ts` (whisper.cpp) before reaching the engine, fixing the empty-`text` session-resume crash. Multi-language config → `auto`; concurrent voice notes are serialized to avoid OOM on small hosts, with a one-line "queued" ack. If STT is unavailable/empty, the message is dropped with a user-facing explanation instead of forwarding empty text.
+- **Telegram file attachments** (#60) — documents, photos, videos, animations, and stickers are downloaded and surfaced via `msg.attachments` (UUID-named in `TMP_DIR` to avoid collisions), so the engine actually receives files instead of silently dropping them. `video_note` is routed to transcription (above), not attached, to avoid double-handling.
 
 ### 🪄 Delegation protocol rewrite
 - **Identity line uses the employee's actual rank/department** (was hardcoded "You are the COO" even for mid-tier managers who delegate downward).

@@ -427,6 +427,13 @@ export interface TelegramConnectorConfig {
   botToken: string;
   allowFrom?: number[];
   ignoreOldMessagesOnBoot?: boolean;
+  /** Speech-to-text settings forwarded from top-level `config.stt` */
+  stt?: {
+    enabled?: boolean;
+    model?: string;
+    language?: string;
+    languages?: string[];
+  };
 }
 
 export interface WhatsAppConnectorConfig {
