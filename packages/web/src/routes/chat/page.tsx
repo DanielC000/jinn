@@ -290,7 +290,7 @@ function ChatPage() {
     clearIntermediateMessages(id)
     chatTabs.closeTab(chatTabs.tabs.findIndex(t => t.sessionId === id))
     setShowMoreMenu(false)
-    qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
+    qc.invalidateQueries({ queryKey: queryKeys.sessions.root })
   }, [selectedId, chatTabs, deleteSessionMutation, qc])
 
   const handleDuplicate = useCallback(async (id: string) => {
@@ -307,7 +307,7 @@ function ChatPage() {
           employeeName: result.employee || undefined,
         })
         setShowMoreMenu(false)
-        qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
+        qc.invalidateQueries({ queryKey: queryKeys.sessions.root })
       }
     } catch (err: any) {
       window.alert(`Duplicate failed: ${err.message || 'Unknown error'}`)
@@ -316,7 +316,7 @@ function ChatPage() {
 
   const handleDuplicateFromSidebar = useCallback((newSessionId: string) => {
     chatTabs.openTab({ sessionId: newSessionId, label: 'Duplicated Chat', status: 'idle', unread: false, pinned: true })
-    qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
+    qc.invalidateQueries({ queryKey: queryKeys.sessions.root })
   }, [chatTabs, qc])
 
   // ChatPane callbacks
@@ -324,7 +324,7 @@ function ChatPage() {
     if (pending) setPendingUserMessage({ sessionId: newId, message: pending })
     setSelectedId(newId)
     chatTabs.openTab({ sessionId: newId, label: 'New Chat', status: 'running', unread: false, pinned: true })
-    qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
+    qc.invalidateQueries({ queryKey: queryKeys.sessions.root })
   }, [chatTabs, qc])
 
   // Clear pendingUserMessage when selectedId moves away from the session it was created for
@@ -346,7 +346,7 @@ function ChatPage() {
   }, [])
 
   const handleRefresh = useCallback(() => {
-    qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
+    qc.invalidateQueries({ queryKey: queryKeys.sessions.root })
   }, [qc])
 
   // Navigation helpers for keyboard shortcuts

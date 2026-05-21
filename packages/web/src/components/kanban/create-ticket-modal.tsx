@@ -28,6 +28,7 @@ interface CreateTicketModalProps {
 const PRIORITIES: TicketPriority[] = ['low', 'medium', 'high']
 const PRIORITY_LABELS: Record<TicketPriority, string> = {
   low: 'Low',
+  med: 'Medium',
   medium: 'Medium',
   high: 'High',
 }

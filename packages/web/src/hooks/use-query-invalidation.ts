@@ -53,13 +53,13 @@ export function useQueryInvalidation() {
         for (const key of pendingRef.current) {
           switch (key) {
             case 'sessions':
-              qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
+              qc.invalidateQueries({ queryKey: queryKeys.sessions.root })
               break
             case 'cron':
-              qc.invalidateQueries({ queryKey: queryKeys.cron.all })
+              qc.invalidateQueries({ queryKey: queryKeys.cron.root })
               break
             case 'skills':
-              qc.invalidateQueries({ queryKey: queryKeys.skills.all })
+              qc.invalidateQueries({ queryKey: queryKeys.skills.root })
               break
           }
         }

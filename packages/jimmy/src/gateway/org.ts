@@ -1,16 +1,44 @@
 import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
-import { ORG_DIR } from "../shared/paths.js";
+import { ORG_DIR, ORGANISATIONS_DIR } from "../shared/paths.js";
 import type { Employee } from "../shared/types.js";
 import { logger } from "../shared/logger.js";
 
+/**
+ * Scan the legacy ~/.jinn/org/ directory. After the Phase 1 first-boot migration,
+ * the legacy dir no longer exists — we transparently union-scan every
+ * Organisation's per-Org org dir so callers that haven't been Org-aware'd yet
+ * (cron runner, manager, server, etc.) keep working. Each call site will be
+ * migrated to scoped lookup in phase 5.
+ */
 export function scanOrg(): Map<string, Employee> {
+  if (fs.existsSync(ORG_DIR)) return scanOrgFromDir(ORG_DIR);
+  // Fall back to every Organisation's per-Org dir.
+  const registry = new Map<string, Employee>();
+  if (!fs.existsSync(ORGANISATIONS_DIR)) return registry;
+  for (const entry of fs.readdirSync(ORGANISATIONS_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const perOrg = path.join(ORGANISATIONS_DIR, entry.name, "org");
+    if (!fs.existsSync(perOrg)) continue;
+    for (const [name, emp] of scanOrgFromDir(perOrg)) {
+      // First wins on collision so a global call sees a single deterministic answer.
+      if (!registry.has(name)) registry.set(name, emp);
+    }
+  }
+  return registry;
+}
+
+/**
+ * Scan an arbitrary org directory for employee YAML files. Used by phase 2's
+ * per-Organisation routing where employees live under
+ * ~/.jinn/organisations/<id>/org/ instead of the legacy ~/.jinn/org/.
+ */
+export function scanOrgFromDir(root: string): Map<string, Employee> {
   const registry = new Map<string, Employee>();
 
-  if (!fs.existsSync(ORG_DIR)) return registry;
+  if (!fs.existsSync(root)) return registry;
 
-  // Recursively find all .yaml files in org/
   function scan(dir: string) {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
@@ -54,7 +82,7 @@ export function scanOrg(): Map<string, Employee> {
     }
   }
 
-  scan(ORG_DIR);
+  scan(root);
   return registry;
 }
 

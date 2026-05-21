@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.14.0] - 2026-05-21 — Project-scoped task-bound workflow
+
+A major rework of how Jinn structures work. Sessions are no longer free-floating per-employee chats — they're either **task-bound** (attached to a Kanban card) or **untracked** (today's sidebar-initiated behavior). Multiple **Organisations** can coexist, each with its own Kanban, employees, cron jobs, and skills.
+
+### ✨ Features
+- **Organisations as the top-level container** — every Org has its own employees, Kanban, cron, and skills overlay. Sidebar shows an Organisation switcher (persists selection to localStorage). First-boot migration creates a single "Scryloft" Organisation from the existing `~/.jinn/org/` directory.
+- **Six-column Kanban backed by the gateway DB** — Backlog → To Do → In Progress → Waiting → Review → Done. Drag-drop persists via `PATCH /api/tasks/:id`. Replaces the v0.13.x localStorage prototype; legacy data is cleared with a one-time toast.
+- **Auto-picker per Organisation** — watches the To Do column and dispatches up to `wip_cap` tasks to the configured lead employee. WIP cap counts In Progress + Review only; Waiting parks the task on a human and frees a slot. Soft on cap-down, immediate on cap-up. Default cap is 3.
+- **60-second reconciler** — sweeps non-terminal tasks for wedged lead sessions (paused, errored, archived, missing) and flips them to `stalled` so the UI surfaces a re-dispatch banner.
+- **Per-task session uniqueness** — exactly one session per `(employee, task_id)` pair. Re-delegations to the same employee on the same task land as new turns on the existing chat. First parent wins on `parent_session_id`; archive grouping is by `task_id`, not by parent chain.
+- **Closing a task archives every bound session together** — no successor (task-close is terminal one-way); no per-session summary in v1. File a follow-up via `supersedes_task_id` on a new task.
+- **`create_task` agent tool** — `POST /api/sessions/:sessionId/tools/create-task`. Restricted to executive/manager ranks (or any employee with `provides.create_task: true`). 20/hour per-session rate limit.
+- **Cron `taskMode`** — `untracked` (default, today's behavior), `create-task` (file a backlog task), `resume-task` (dispatch prompt onto a task's lead session).
+- **Skills dual-scope** — per-Org overlay at `~/.jinn/organisations/<id>/skills/` wins over global `~/.jinn/skills/` on name collision, mirroring Claude Code's `.claude/skills/` precedence.
+
+### 🪄 Delegation protocol rewrite
+- **Identity line uses the employee's actual rank/department** (was hardcoded "You are the COO" even for mid-tier managers like `manager-cora`).
+- **Per-task reuse rule** documented alongside per-employee reuse: one chat per `(employee, task_id)`.
+- **Promoted from OPTIONAL → STANDARD tier** so the per-task uniqueness invariant doesn't get silently trimmed under budget pressure.
+- **Delegation audit-trail rows** — every parent-spawned child writes a `role='delegation'` row into the parent's messages table with child id + employee + task id + prompt preview. Lets Jinn reconstruct delegation timelines without parsing Claude's JSONL.
+
+### 🪄 Notifications
+- **Task context in payload** — when a task-bound child replies, the notification surfaces `[Task: "<title>"]` so the parent can demultiplex across parallel tasks visually.
+- **Size-based auto-archive scoped to untracked sessions only** — task-bound sessions live for the lifetime of the task and are archived together on task-close. Keeps the two archive paths disjoint.
+
+### 🗄 Database
+- New tables: `organisations`, `tasks`, `employees` (synthetic index), `cron_jobs` (synthetic index).
+- New nullable FKs on `sessions`: `organisation_id`, `task_id`, `employee_id`. Become NOT NULL in a later cleanup pass; legacy `sessions.employee` TEXT column stays during transition.
+- First-boot migration moves `~/.jinn/org/` → `~/.jinn/organisations/<id>/org/` via copy-then-delete (idempotent), indexes employees and cron jobs.
+
+### Migration
+
+See [`packages/jimmy/template/migrations/0.14.0/MIGRATION.md`](packages/jimmy/template/migrations/0.14.0/MIGRATION.md) for the full cutover procedure. **TL;DR**:
+1. Stop the gateway. Back up `~/.jinn/`.
+2. Wipe `sessions/registry.db`, `tmp/`, `logs/*.log`, and top-level cruft (the migration assumes a fresh DB).
+3. `pnpm build` and restart. First boot creates the Scryloft Organisation and moves your org dir into it.
+4. Re-onboard your team (one paragraph brief — see the migration doc).
+5. File initial Kanban tasks per the seed list.
+
 ## [0.13.3] - 2026-05-20
 
 ### ✨ Features

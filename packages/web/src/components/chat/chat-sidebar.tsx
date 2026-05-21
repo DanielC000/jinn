@@ -10,6 +10,7 @@ import { useSettings } from "@/routes/settings-provider"
 import { cleanPreview } from "@/lib/clean-preview"
 import { queryKeys } from "@/lib/query-keys"
 import { useSessions, useSessionCounts, useSessionSearch, useUpdateSession, useDeleteSession, useBulkDeleteSessions, useDuplicateSession } from "@/hooks/use-sessions"
+import { useCurrentOrganisationId } from "@/context/current-organisation"
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -743,6 +744,7 @@ export function ChatSidebar({
   const portalSlug = portalName.toLowerCase()
 
   const qc = useQueryClient()
+  const orgId = useCurrentOrganisationId()
   const { data: rawSessions, isLoading: loading } = useSessions()
   const { data: meta } = useSessionCounts()
   const counts = meta?.counts ?? {}
@@ -845,8 +847,8 @@ export function ChatSidebar({
     if (loadingMore.has(groupKey)) return
     setLoadingMore((prev) => new Set(prev).add(groupKey))
     try {
-      const more = await api.getSessionsForGroup(groupKey, offset, 50)
-      qc.setQueryData<SessionsResponse>(queryKeys.sessions.all, (old) => {
+      const more = await api.getSessionsForGroup(groupKey, offset, 50, orgId)
+      qc.setQueryData<SessionsResponse>(queryKeys.sessions.all(orgId), (old) => {
         if (!old) return old
         const seen = new Set(old.sessions.map((s) => s.id as string))
         const merged = [...old.sessions, ...more.filter((s) => !seen.has(s.id as string))]

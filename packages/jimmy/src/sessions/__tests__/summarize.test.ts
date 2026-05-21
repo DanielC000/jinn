@@ -33,6 +33,9 @@ function fakeSession(overrides: Partial<Session> = {}): Session {
     archivedFrom: null,
     summaryPrompt: null,
     autoSplitDisabled: false,
+    organisationId: null,
+    taskId: null,
+    employeeId: null,
     ...overrides,
   };
 }

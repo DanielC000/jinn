@@ -1,18 +1,8 @@
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { Plus } from 'lucide-react'
-import { api } from '@/lib/api'
-import type { Employee, OrgData } from '@/lib/api'
-import type { KanbanTicket, TicketStatus, TicketPriority } from '@/lib/kanban/types'
-import {
-  loadTickets,
-  saveTickets,
-  createTicket,
-  updateTicket,
-  moveTicket,
-  deleteTicket,
-  type KanbanStore,
-} from '@/lib/kanban/store'
+import type { Employee, Task, TaskStatus } from '@/lib/api'
+import type { KanbanTicket, TicketPriority, TicketStatus } from '@/lib/kanban/types'
 import { PageLayout, ToolbarActions } from '@/components/page-layout'
 import {
   Dialog,
@@ -25,6 +15,12 @@ import {
 import { KanbanBoard } from '@/components/kanban/kanban-board'
 import { CreateTicketModal } from '@/components/kanban/create-ticket-modal'
 import { TicketDetailPanel } from '@/components/kanban/ticket-detail-panel'
+import { useOrg } from '@/hooks/use-employees'
+import { useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRedispatchTask } from '@/hooks/use-tasks'
+import { useCurrentOrganisation } from '@/context/current-organisation'
+import { api } from '@/lib/api'
+import { useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '@/lib/query-keys'
 
 /** Delete confirmation dialog */
 function DeleteConfirmDialog({
@@ -46,7 +42,7 @@ function DeleteConfirmDialog({
           <DialogTitle
             className="text-[length:var(--text-title3)] font-[var(--weight-bold)] text-[var(--text-primary)]"
           >
-            Delete Ticket
+            Delete Task
           </DialogTitle>
           <DialogDescription
             className="text-[length:var(--text-footnote)] text-[var(--text-secondary)] leading-[1.5]"
@@ -74,255 +70,121 @@ function DeleteConfirmDialog({
   )
 }
 
+/**
+ * Phase 4 Kanban — task-bound, API-backed (was localStorage-backed in v0.13.x).
+ *
+ * - All state lives in the gateway; React Query reflects it.
+ * - Drag-drop between columns triggers PATCH /api/tasks/:id { status }.
+ * - Six columns: Backlog → To Do → In Progress → Waiting → Review → Done.
+ * - Create-task form lands tickets in Backlog (auto-picker only watches To Do).
+ * - The legacy localStorage Kanban store is wiped on first mount with a toast.
+ */
+
+const STORAGE_KEY_LEGACY = 'jinn-kanban'
+const STORAGE_KEY_TOAST_SEEN = 'jinn:kanban-prototype-cleared-toast-v1'
+
+function taskToTicket(task: Task, lead: Employee | null): KanbanTicket {
+  const priority: TicketPriority = task.priority === 'med' ? 'medium' : (task.priority as TicketPriority)
+  return {
+    id: task.id,
+    title: task.title,
+    description: task.description ?? '',
+    status: task.status as TicketStatus,
+    priority,
+    // Phase 4: assignee shown is the lead employee for the active Organisation,
+    // since the auto-picker (phase 6) always dispatches to that one. The
+    // KanbanTicket shape carries it for the existing card UI.
+    assigneeId: lead?.name ?? null,
+    department: lead?.department ?? null,
+    workState: task.status === 'stalled' ? 'failed' : 'idle',
+    createdAt: new Date(task.createdAt).getTime(),
+    updatedAt: new Date(task.updatedAt).getTime(),
+    departmentId: lead?.department ?? null,
+    stalled: task.status === 'stalled',
+  }
+}
+
 export default function KanbanPage() {
-  const [tickets, setTickets] = useState<KanbanStore>({})
-  const [employees, setEmployees] = useState<Employee[]>([])
-  const [departments, setDepartments] = useState<string[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { current: currentOrg } = useCurrentOrganisation()
+  const { data: org, isLoading: orgLoading } = useOrg()
+  const tasksQuery = useTasks()
+  const createTaskMutation = useCreateTask()
+  const updateTaskMutation = useUpdateTask()
+  const deleteTaskMutation = useDeleteTask()
+  const redispatchTaskMutation = useRedispatchTask()
+  const qc = useQueryClient()
+
   const [createOpen, setCreateOpen] = useState(false)
   const [selectedTicket, setSelectedTicket] = useState<KanbanTicket | null>(null)
   const [filterEmployeeId, setFilterEmployeeId] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<KanbanTicket | null>(null)
+  const [clearedToast, setClearedToast] = useState(false)
 
-  /** Sync tickets to the gateway API, grouped by department */
-  const syncToApi = useCallback(async (store: KanbanStore) => {
-    // Group tickets by department
-    const byDept: Record<string, Array<{
-      id: string
-      title: string
-      description?: string
-      status: string
-      priority: string
-      assignee?: string
-      createdAt: string
-      updatedAt: string
-    }>> = {}
+  const employees: Employee[] = org?.employees ?? []
+  const leadEmployee = useMemo(() => {
+    if (!currentOrg?.leadEmployeeId) return null
+    return employees.find((e) => e.name === currentOrg.leadEmployeeId) ?? null
+  }, [currentOrg, employees])
 
-    for (const ticket of Object.values(store)) {
-      const dept = ticket.department
-      if (!dept) continue
-      if (!byDept[dept]) byDept[dept] = []
-      byDept[dept].push({
-        id: ticket.id,
-        title: ticket.title,
-        description: ticket.description || undefined,
-        status: ticket.status,
-        priority: ticket.priority,
-        assignee: ticket.assigneeId || undefined,
-        createdAt: new Date(ticket.createdAt).toISOString(),
-        updatedAt: new Date(ticket.updatedAt).toISOString(),
-      })
+  // One-time discard of the legacy localStorage data, per Phase 4 spec.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const seen = window.localStorage.getItem(STORAGE_KEY_TOAST_SEEN)
+    const legacy = window.localStorage.getItem(STORAGE_KEY_LEGACY)
+    if (legacy && !seen) {
+      window.localStorage.removeItem(STORAGE_KEY_LEGACY)
+      window.localStorage.setItem(STORAGE_KEY_TOAST_SEEN, '1')
+      setClearedToast(true)
     }
-
-    // PUT each department's board (including empty arrays to clear deleted tickets)
-    const allDepts = new Set([...Object.keys(byDept), ...departments])
-    const promises = Array.from(allDepts).map(async (dept) => {
-      try {
-        await api.updateDepartmentBoard(dept, byDept[dept] || [])
-      } catch {
-        // API unavailable — localStorage is the fallback
-      }
-    })
-
-    await Promise.all(promises)
-  }, [departments])
-
-  const loadData = useCallback(() => {
-    setLoading(true)
-    setError(null)
-
-    // Load employees from API, then load board data from department boards
-    api
-      .getOrg()
-      .then(async (data: OrgData) => {
-        setEmployees(data.employees)
-        setDepartments(data.departments)
-
-        // Load board tickets from all departments
-        const boardTickets: KanbanStore = {}
-        for (const dept of data.departments) {
-          try {
-            const board = await api.getDepartmentBoard(dept) as unknown as Array<{
-              id: string
-              title: string
-              description?: string
-              status: string
-              priority?: string
-              assignee?: string
-              createdAt?: string
-              updatedAt?: string
-            }>
-            if (Array.isArray(board)) {
-              for (const item of board) {
-                // Map board.json status to kanban statuses
-                const statusMap: Record<string, TicketStatus> = {
-                  todo: 'todo',
-                  'in_progress': 'in-progress',
-                  'in-progress': 'in-progress',
-                  done: 'done',
-                  backlog: 'backlog',
-                  review: 'review',
-                }
-                const status = statusMap[item.status] || 'todo'
-                const priorityMap: Record<string, TicketPriority> = {
-                  low: 'low',
-                  medium: 'medium',
-                  high: 'high',
-                }
-                const priority = priorityMap[item.priority || 'medium'] || 'medium'
-                boardTickets[item.id] = {
-                  id: item.id,
-                  title: item.title,
-                  description: item.description || '',
-                  status,
-                  priority,
-                  assigneeId: item.assignee || null,
-                  department: dept,
-                  workState: 'idle',
-                  createdAt: item.createdAt ? new Date(item.createdAt).getTime() : Date.now(),
-                  updatedAt: item.updatedAt ? new Date(item.updatedAt).getTime() : Date.now(),
-                  departmentId: dept,
-                }
-              }
-            }
-          } catch {
-            // Department may not have a board.json, that's fine
-          }
-        }
-
-        // API is the sole source of truth on load. Do not merge localStorage —
-        // agent-made changes (moves, deletes) are only reflected in the API,
-        // and stale localStorage entries would cause ghost / wrong-state tickets.
-        setTickets(boardTickets)
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => {
-    loadData()
-  }, [loadData])
+  const tickets: KanbanTicket[] = useMemo(() => {
+    const tasks = tasksQuery.data ?? []
+    return tasks.map((t) => taskToTicket(t, leadEmployee))
+  }, [tasksQuery.data, leadEmployee])
 
-  // Persist tickets to both localStorage and the API whenever the store changes
-  useEffect(() => {
-    if (!loading) {
-      saveTickets(tickets)
-    }
-  }, [tickets, loading])
-
-  /**
-   * Persist the current ticket store back to each department's board via the
-   * gateway API. Tickets without a departmentId are silently skipped (they
-   * remain in localStorage only until a department can be assigned).
-   */
-  const persistToApi = useCallback(
-    async (store: KanbanStore) => {
-      // Group tickets by their department
-      const byDept: Record<string, KanbanTicket[]> = {}
-      for (const ticket of Object.values(store)) {
-        if (!ticket.departmentId) continue
-        if (!byDept[ticket.departmentId]) byDept[ticket.departmentId] = []
-        byDept[ticket.departmentId].push(ticket)
-      }
-
-      // Also PUT an empty array for any department that no longer has tickets
-      // so deleted tickets don't come back on the next reload
-      for (const dept of departments) {
-        if (!byDept[dept]) byDept[dept] = []
-      }
-
-      // Write each department board; errors are non-fatal (UI still works via localStorage)
-      await Promise.all(
-        Object.entries(byDept).map(([dept, deptTickets]) => {
-          const boardData = deptTickets.map((t) => ({
-            id: t.id,
-            title: t.title,
-            description: t.description,
-            status: t.status,
-            priority: t.priority,
-            assignee: t.assigneeId ?? undefined,
-            createdAt: new Date(t.createdAt).toISOString(),
-            updatedAt: new Date(t.updatedAt).toISOString(),
-          }))
-          return api.updateDepartmentBoard(dept, boardData).catch(() => {
-            // Silently ignore — department dir may not exist on disk yet
-          })
-        }),
-      )
+  const handleCreateTicket = useCallback(
+    (data: { title: string; description: string; priority: TicketPriority; assigneeId: string | null }) => {
+      const priority = data.priority === 'medium' ? 'med' : data.priority
+      createTaskMutation.mutate({
+        title: data.title,
+        description: data.description,
+        priority: priority as 'low' | 'med' | 'high',
+        status: 'backlog',
+      })
     },
-    [departments],
+    [createTaskMutation],
   )
 
-  // Keep selectedTicket in sync with store
+  const handleMoveTicket = useCallback(
+    (ticketId: string, status: TicketStatus) => {
+      // Drag-drop into "done" closes the task to fire the close lifecycle (Phase 7).
+      updateTaskMutation.mutate({ id: ticketId, data: { status: status as TaskStatus } })
+    },
+    [updateTaskMutation],
+  )
+
+  const handleDeleteTicket = useCallback(
+    (ticketId: string) => {
+      deleteTaskMutation.mutate(ticketId)
+      setSelectedTicket(null)
+      setDeleteConfirm(null)
+    },
+    [deleteTaskMutation],
+  )
+
+  const handleTicketClick = useCallback((ticket: KanbanTicket) => {
+    setSelectedTicket(ticket)
+  }, [])
+
+  // Keep selectedTicket in sync as the underlying ticket updates.
   useEffect(() => {
-    if (selectedTicket && tickets[selectedTicket.id]) {
-      const current = tickets[selectedTicket.id]
-      if (current.updatedAt !== selectedTicket.updatedAt) {
-        setSelectedTicket(current)
-      }
-    }
+    if (!selectedTicket) return
+    const next = tickets.find((t) => t.id === selectedTicket.id)
+    if (next && next.updatedAt !== selectedTicket.updatedAt) setSelectedTicket(next)
   }, [tickets, selectedTicket])
 
-  function handleCreateTicket(data: {
-    title: string
-    description: string
-    priority: TicketPriority
-    assigneeId: string | null
-  }) {
-    // Infer department from assignee, fallback to first known department
-    const emp = data.assigneeId ? employees.find(e => e.name === data.assigneeId) : null
-    const departmentId = emp?.department || departments[0] || null
-
-    setTickets((prev) => {
-      const next = createTicket(prev, {
-        ...data,
-        status: 'backlog',
-        department: departmentId,
-        departmentId,
-      })
-      persistToApi(next)
-      return next
-    })
-  }
-
-  function handleMoveTicket(ticketId: string, status: TicketStatus) {
-    setTickets((prev) => {
-      const next = moveTicket(prev, ticketId, status)
-      persistToApi(next)
-      return next
-    })
-  }
-
-  function handleDeleteTicket(ticketId: string) {
-    setTickets((prev) => {
-      const next = deleteTicket(prev, ticketId)
-      persistToApi(next)
-      return next
-    })
-    setSelectedTicket(null)
-    setDeleteConfirm(null)
-  }
-
-  function handleAssigneeChange(ticketId: string, assigneeId: string | null) {
-    // Update department when assignee changes
-    const emp = assigneeId ? employees.find(e => e.name === assigneeId) : null
-    const updates: Partial<Omit<KanbanTicket, 'id' | 'createdAt'>> = { assigneeId }
-    if (emp?.department) {
-      updates.department = emp.department
-    }
-    setTickets((prev) => {
-      const next = updateTicket(prev, ticketId, updates)
-      persistToApi(next)
-      return next
-    })
-  }
-
-  function handleTicketClick(ticket: KanbanTicket) {
-    setSelectedTicket(ticket)
-  }
-
-  if (error) {
+  if (tasksQuery.error) {
     return (
       <PageLayout>
         <div
@@ -331,10 +193,10 @@ export default function KanbanPage() {
           <div
             className="rounded-[var(--radius-md)] bg-[color-mix(in_srgb,var(--system-red)_10%,transparent)] border border-[color-mix(in_srgb,var(--system-red)_30%,transparent)] px-[var(--space-4)] py-[var(--space-3)] text-[length:var(--text-body)] text-[var(--system-red)]"
           >
-            Failed to load employees: {error}
+            Failed to load tasks: {(tasksQuery.error as Error).message}
           </div>
           <button
-            onClick={loadData}
+            onClick={() => tasksQuery.refetch()}
             className="px-[var(--space-4)] py-[var(--space-2)] rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--accent-contrast)] border-none cursor-pointer text-[length:var(--text-body)] font-[var(--weight-semibold)]"
           >
             Retry
@@ -344,14 +206,38 @@ export default function KanbanPage() {
     )
   }
 
-  const ticketCount = Object.keys(tickets).length
+  const loading = tasksQuery.isLoading || orgLoading
+  const ticketCount = tickets.length
 
-  // Employees that have at least one ticket assigned
-  const assignedEmployeeNames = new Set(
-    Object.values(tickets)
-      .map((t) => t.assigneeId)
-      .filter(Boolean),
+  // Phase 6: WIP cap counts only In Progress + Review.
+  const runningCount = tickets.filter((t) => t.status === 'in-progress' || t.status === 'review').length
+  const stalledCount = tickets.filter((t) => t.status === 'stalled').length
+  const wipCap = currentOrg?.wipCap ?? 3
+
+  const adjustWipCap = useCallback(
+    async (delta: number) => {
+      if (!currentOrg) return
+      const next = Math.max(1, wipCap + delta)
+      if (next === wipCap) return
+      try {
+        await api.updateOrganisation(currentOrg.id, { wipCap: next })
+        qc.invalidateQueries({ queryKey: queryKeys.organisations.all })
+      } catch (err) {
+        window.alert(`Failed to update WIP cap: ${(err as Error).message}`)
+      }
+    },
+    [currentOrg, wipCap, qc],
   )
+
+  const handleRedispatch = useCallback(
+    (ticketId: string) => {
+      redispatchTaskMutation.mutate(ticketId)
+    },
+    [redispatchTaskMutation],
+  )
+
+  // Show the lead employee as a filter chip when set.
+  const assignedEmployeeNames = new Set(tickets.map((t) => t.assigneeId).filter(Boolean))
   const assignedEmployees = employees.filter((e) => assignedEmployeeNames.has(e.name))
 
   return (
@@ -372,22 +258,77 @@ export default function KanbanPage() {
               <p
                 className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] mt-[2px] mb-0"
               >
-                {ticketCount} ticket{ticketCount !== 1 ? 's' : ''}
+                {ticketCount} task{ticketCount !== 1 ? 's' : ''}
+                {currentOrg ? ` · ${currentOrg.name}` : ''}
               </p>
             </div>
 
             <ToolbarActions>
+              {/* Phase 6: WIP cap widget. Counting only in-progress + review (waiting is parked, doesn't consume a slot). */}
+              <div className="flex items-center gap-[var(--space-1)] text-[length:var(--text-caption1)] text-[var(--text-secondary)]">
+                <span className="px-2 py-1 rounded-[var(--radius-md)] bg-[var(--fill-tertiary)]">
+                  Tasks: {runningCount}/{wipCap}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => adjustWipCap(-1)}
+                  disabled={wipCap <= 1}
+                  className="rounded px-1.5 py-0.5 text-xs disabled:opacity-40 hover:bg-[var(--fill-tertiary)]"
+                  aria-label="Decrease WIP cap"
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  onClick={() => adjustWipCap(+1)}
+                  className="rounded px-1.5 py-0.5 text-xs hover:bg-[var(--fill-tertiary)]"
+                  aria-label="Increase WIP cap"
+                >
+                  +
+                </button>
+                {stalledCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Re-dispatch every stalled task back to To Do; the picker
+                      // grabs them on the next tick. Soft semantics on cap means
+                      // it's safe to redispatch all at once even past the cap.
+                      const stalled = tickets.filter((t) => t.status === 'stalled')
+                      stalled.forEach((t) => handleRedispatch(t.id))
+                    }}
+                    className="px-2 py-1 rounded-[var(--radius-md)] bg-[color-mix(in_srgb,var(--system-red)_20%,transparent)] text-[var(--system-red)] hover:bg-[color-mix(in_srgb,var(--system-red)_30%,transparent)]"
+                    title="Re-dispatch every stalled task"
+                  >
+                    {stalledCount} stalled · re-dispatch
+                  </button>
+                )}
+              </div>
               <button
                 onClick={() => setCreateOpen(true)}
                 className="rounded-[var(--radius-md)] px-4 py-2 text-[length:var(--text-footnote)] font-[var(--weight-semibold)] border-none flex items-center gap-[var(--space-2)] bg-[var(--accent)] text-white cursor-pointer"
               >
                 <Plus size={16} />
-                New Ticket
+                New Task
               </button>
             </ToolbarActions>
           </div>
 
-          {/* Employee filter bar */}
+          {/* One-time toast for legacy data wipe */}
+          {clearedToast && (
+            <div className="px-[var(--space-5)] py-[var(--space-2)] shrink-0">
+              <div className="rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-caption1)] text-[var(--text-secondary)] flex items-center justify-between gap-[var(--space-3)]">
+                <span>The localStorage Kanban prototype data has been cleared. Tasks are now stored in the gateway.</span>
+                <button
+                  onClick={() => setClearedToast(false)}
+                  className="rounded px-2 py-0.5 text-xs hover:bg-[var(--bg-tertiary)]"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Employee filter bar — visible when a lead has any tasks */}
           {assignedEmployees.length > 0 && (
             <div
               className="flex items-center gap-[var(--space-2)] px-[var(--space-5)] py-[var(--space-2)] overflow-x-auto shrink-0"
@@ -428,6 +369,17 @@ export default function KanbanPage() {
               >
                 Loading...
               </div>
+            ) : ticketCount === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full gap-[var(--space-3)] text-[var(--text-tertiary)] text-[length:var(--text-caption1)]">
+                <span>No tasks yet.</span>
+                <button
+                  onClick={() => setCreateOpen(true)}
+                  className="rounded-[var(--radius-md)] px-4 py-2 text-[length:var(--text-footnote)] font-[var(--weight-semibold)] border-none flex items-center gap-[var(--space-2)] bg-[var(--accent)] text-white cursor-pointer"
+                >
+                  <Plus size={16} />
+                  Create the first task
+                </button>
+              </div>
             ) : (
               <KanbanBoard
                 tickets={tickets}
@@ -457,7 +409,10 @@ export default function KanbanPage() {
             employees={employees}
             onClose={() => setSelectedTicket(null)}
             onStatusChange={(status) => handleMoveTicket(selectedTicket.id, status)}
-            onAssigneeChange={(name) => handleAssigneeChange(selectedTicket.id, name)}
+            onAssigneeChange={() => {
+              // Phase 4: assignee is fixed to the lead. Phase 8 may expose
+              // per-task assignee overrides via the new tools API.
+            }}
             onDelete={() => setDeleteConfirm(selectedTicket)}
           />
         )}
@@ -471,7 +426,7 @@ export default function KanbanPage() {
           />
         )}
 
-        {/* Create ticket modal */}
+        {/* Create task modal */}
         <CreateTicketModal
           open={createOpen}
           onOpenChange={setCreateOpen}

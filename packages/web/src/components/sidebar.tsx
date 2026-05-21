@@ -13,6 +13,7 @@ import { THEMES } from "@/lib/themes"
 import { NAV_ITEMS } from "@/lib/nav"
 import type { ThemeId } from "@/lib/themes"
 import { cn } from "@/lib/utils"
+import { OrgSwitcher } from "@/components/layout/org-switcher"
 
 // ---------------------------------------------------------------------------
 // Theme icon helper
@@ -73,6 +74,11 @@ export function Sidebar() {
         <span className={cn("whitespace-nowrap text-[17px] font-semibold text-foreground transition-opacity duration-200", hovered ? "opacity-100" : "opacity-0")}>
           {portalName}
         </span>
+      </div>
+
+      {/* Phase 2: Organisation switcher. Collapses to icon-only when the sidebar is narrow. */}
+      <div className="px-2 pb-2">
+        <OrgSwitcher compact={!hovered} />
       </div>
 
       <nav className="flex flex-1 flex-col gap-0.5 px-2">

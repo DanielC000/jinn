@@ -184,13 +184,22 @@ export function buildContext(opts: {
     });
   }
 
-  // ── OPTIONAL: Delegation protocol (COO only) ───────────────
-  if (!opts.employee) {
+  // ── STANDARD: Delegation protocol (anyone with direct reports) ──
+  // Phase 5: section is promoted from OPTIONAL → STANDARD so per-task reuse
+  // semantics don't get silently trimmed under budget pressure. The prompt is
+  // built around the calling employee's actual rank/department; the legacy
+  // "You are the COO" hardcode was misleading for mid-tier managers like
+  // manager-cora (firestudio-ops). Phase 5 audits the live delegation chain
+  // (cora-aaron-henrik) showed agents internalize the wrong identity.
+  const hasReports =
+    !opts.employee ||
+    (opts.hierarchy?.nodes[opts.employee.name]?.directReports?.length ?? 0) > 0;
+  if (hasReports) {
     sections.push({
-      tier: Tier.OPTIONAL,
+      tier: Tier.STANDARD,
       marker: "## Employee Delegation",
-      content: buildDelegationProtocol(gatewayUrl, portalName, opts.config),
-      summary: `## Employee Delegation Protocol\nDelegate via \`POST ${gatewayUrl}/api/sessions\` with \`{prompt, employee, parentSessionId}\`. Check children via \`GET /api/sessions/:id/children\`.`,
+      content: buildDelegationProtocol(gatewayUrl, portalName, opts.config, opts.employee, opts.hierarchy),
+      summary: `## Employee Delegation Protocol\nDelegate via \`POST ${gatewayUrl}/api/sessions\` with \`{prompt, employee, parentSessionId}\`. For task-bound work, the child inherits your taskId. Reuse the same child for the same employee on the same task — never spawn duplicates.`,
     });
   }
 
@@ -679,10 +688,19 @@ function buildEvolutionContext(portalName: string): string {
 }
 
 /**
- * Delegation protocol: condensed version focusing on the essential API patterns.
- * Verbose examples and multi-paragraph explanations have been trimmed.
+ * Phase 5 delegation protocol. Employee-aware (was hard-coded "You are the COO"
+ * even for mid-tier managers), and now teaches per-task reuse alongside the
+ * existing per-employee reuse rule. Section tier is STANDARD so it doesn't get
+ * silently trimmed under budget pressure — the per-task uniqueness invariant
+ * is load-bearing for the task-bound model.
  */
-function buildDelegationProtocol(gatewayUrl: string, _portalName: string, config?: JinnConfig): string {
+function buildDelegationProtocol(
+  gatewayUrl: string,
+  _portalName: string,
+  config?: JinnConfig,
+  employee?: Employee,
+  hierarchy?: import("../shared/types.js").OrgHierarchy,
+): string {
   const defaultEngine = config?.engines.default || "claude";
   const engineConfig = defaultEngine === "codex"
     ? config?.engines.codex
@@ -695,40 +713,67 @@ function buildDelegationProtocol(gatewayUrl: string, _portalName: string, config
     ? `\n> **Note**: \`childEffortOverride\` is set to \`"${childOverride}"\`. All child sessions use this effort level.`
     : "";
 
+  // Build the identity line from the actual employee, not a hardcoded role.
+  let identityLine: string;
+  let reportsLine = "";
+  if (employee) {
+    const dept = employee.department ? `, ${employee.department}` : "";
+    identityLine = `You are ${employee.displayName || employee.name} (${employee.rank}${dept}).`;
+    const node = hierarchy?.nodes[employee.name];
+    const reports = node?.directReports ?? [];
+    if (reports.length > 0) {
+      reportsLine = `\nYou manage ${reports.length} direct report${reports.length === 1 ? "" : "s"}: ${reports.join(", ")}.`;
+    }
+  } else {
+    identityLine = "You are the COO. You orchestrate the org by creating **linked child sessions**.";
+  }
+
   return `## Employee Delegation Protocol
 
-You are the COO. You orchestrate employees by creating **linked child sessions**.
+${identityLine}${reportsLine}
+
+You orchestrate your reports by creating **linked child sessions** via the gateway API.
+
+### Task-bound vs untracked
+
+If your session is **task-bound** (you'll see a \`taskId\` in the Current session block):
+- Every child you spawn auto-inherits your \`taskId\` and \`organisationId\`.
+- **Per-task uniqueness**: exactly **one** session per \`(employee, taskId)\` pair. If you're working on task X and ask Sasha for help twice, the second POST returns the same session — your follow-up lands as a new prompt on Sasha's existing chat.
+- Iterate inside the open task. Sessions go idle between feedback rounds; closing the task archives them all together. There is no "reopen" — file a new task with \`supersedesTaskId\` if work surfaces after close.
+
+If your session is **untracked** (no \`taskId\`): today's behavior. One chat per employee, archived only when it gets too long.
 
 ### How delegation works
 
 1. **Detect**: Spot \`@employee-name\` tags or infer the right employee from context.
 
-2. **Check for existing children first**:
+2. **Check for an existing child for this employee** (and this task, if you're task-bound):
 \`\`\`bash
 curl -s ${gatewayUrl}/api/sessions/<your-session-id>/children
 \`\`\`
-If a child exists for this employee, reuse it (skip to step 5).
+If one exists for this employee, reuse it (skip to step 5).
 
 3. **Brief**: Craft clear, targeted instructions — translate user words into actionable briefs.
 
-4. **Spawn**:
+4. **Spawn** (omit \`taskId\` — it inherits from your session automatically):
 \`\`\`bash
 curl -s -X POST ${gatewayUrl}/api/sessions \\
   -H 'Content-Type: application/json' \\
   -d '{"prompt": "<brief>", "employee": "<name>", "parentSessionId": "<your-session-id>"}'
 \`\`\`
+If a session for this \`(employee, taskId)\` pair already exists, the POST returns it instead of creating a duplicate — your prompt lands as a new turn.
 
-5. **Follow up** (existing child):
+5. **Follow up** on an existing child:
 \`\`\`bash
 curl -s -X POST ${gatewayUrl}/api/sessions/<child-id>/message \\
   -H 'Content-Type: application/json' \\
   -d '{"message": "<follow-up>"}'
 \`\`\`
 
-6. **Follow up via GET**: When a child replies, the gateway wakes you with a notification message, so you can end your turn and be called back. Callbacks are best-effort though — if you resume and a child you're waiting on hasn't reported, poll \`GET /api/sessions/:id?last=N\` (check \`status\` is \`idle\`) rather than stalling. Read only the latest messages to avoid context pollution.
+6. **Wait + read**: When a child replies, the gateway wakes you with a notification message — if the child is task-bound, the notification carries \`[Task: "<title>"]\` so you can demultiplex across parallel tasks. Callbacks are best-effort; if you resume and a child you're waiting on hasn't reported, poll \`GET /api/sessions/:id?last=N\` (check \`status\` is \`idle\`).
 
 ### Key rules
-- **Always reuse** child sessions — never create duplicates for the same employee.
+- **Per-task reuse** beats per-parent reuse: one child per \`(employee, taskId)\`, full stop. Re-delegations land on the same chat.
 - **Parallel spawning**: For independent sub-tasks, spawn multiple employees simultaneously.
 - **Cross-reference**: Compare results from multiple employees before responding.
 - **Effort levels**: Include \`"effortLevel"\` in the API body: \`"low"\` (lookups), \`"medium"\` (routine), \`"high"\` (code/architecture).
@@ -740,10 +785,6 @@ curl -s -X POST ${gatewayUrl}/api/sessions/<child-id>/message \\
 | **TRUST** | Simple lookups, status checks | Skim, relay directly |
 | **VERIFY** | Code changes, routine work | Read fully, spot-check key files |
 | **THOROUGH** | Architecture, breaking changes, security | Full review, multi-turn follow-up, verify changes |
-
-### Manager Delegation
-
-When a department has 3+ employees, promote a senior to **manager**. Managers handle their own delegation; you review their summaries, not individual work.
 
 ### Your session ID
 

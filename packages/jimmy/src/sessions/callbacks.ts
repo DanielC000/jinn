@@ -1,4 +1,4 @@
-import { getSession } from "./registry.js";
+import { getSession, getTask } from "./registry.js";
 import { loadConfig } from "../shared/config.js";
 import { logger } from "../shared/logger.js";
 import type { Session } from "../shared/types.js";
@@ -66,6 +66,25 @@ async function _sendNotification(
   const employeeName = childSession.employee || "Unknown";
   const childId = childSession.id;
 
+  // Phase 5d: when the child is task-bound, surface the task title so the
+  // parent can demultiplex notifications across parallel tasks. The
+  // [Task: "<title>"] tag is what the engine reads; the human banner gets a
+  // shorter inline annotation.
+  let taskTag = "";
+  let taskBannerTag = "";
+  if (childSession.taskId) {
+    try {
+      const task = getTask(childSession.taskId);
+      if (task) {
+        const truncated = task.title.length > 60 ? task.title.slice(0, 60) + "…" : task.title;
+        taskTag = ` [Task: "${truncated}"]`;
+        taskBannerTag = ` · ${truncated}`;
+      }
+    } catch (err) {
+      logger.warn(`[callbacks] Failed to resolve task title for ${childSession.taskId}: ${err}`);
+    }
+  }
+
   // Dual audience: `message` is what the parent ENGINE (e.g. the COO) reads —
   // it carries full context and the API hints it needs to follow up.
   // `displayMessage` is the clean, human-facing version shown in the web UI
@@ -73,17 +92,17 @@ async function _sendNotification(
   let message: string;
   let displayMessage: string;
   if (result.error) {
-    message = `⚠️ Employee "${employeeName}" (child session ${childId}) hit an error and could not finish: ${result.error}`;
-    displayMessage = `⚠️ ${employeeName} couldn't finish`;
+    message = `⚠️ Employee "${employeeName}" (child session ${childId})${taskTag} hit an error and could not finish: ${result.error}`;
+    displayMessage = `⚠️ ${employeeName} couldn't finish${taskBannerTag}`;
   } else {
     const raw = (result.result || "").trim() || "(no output)";
     const llmPreview = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
     message =
-      `📩 Employee "${employeeName}" replied in child session ${childId}.\n\n` +
+      `📩 Employee "${employeeName}" replied in child session ${childId}${taskTag}.\n\n` +
       `Reply preview:\n${llmPreview}\n\n` +
       `To read the full reply: GET /api/sessions/${childId}?last=N · ` +
       `to follow up: POST /api/sessions/${childId}/message`;
-    displayMessage = `📩 ${employeeName} replied\n${_clean(raw, 220)}`;
+    displayMessage = `📩 ${employeeName} replied${taskBannerTag}\n${_clean(raw, 220)}`;
   }
 
   await _sendRaw(childSession.parentSessionId!, message, displayMessage);

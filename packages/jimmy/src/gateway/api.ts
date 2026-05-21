@@ -233,6 +233,12 @@ async function maybeAutoArchive(
     if (!fresh) return;
     if (fresh.status === "archived") return;
     if (fresh.autoSplitDisabled) return;
+    // Phase 7: size-based auto-archive applies only to untracked sessions.
+    // Task-bound sessions live for the lifetime of the task and are archived
+    // together on task-close (no successor needed). Skipping here keeps the
+    // two archive paths disjoint, so no spurious task:closed semantics arise
+    // from a size-triggered archive.
+    if (fresh.taskId) return;
 
     const messageCount = countMessages(fresh.id);
     const employee = fresh.employee ? context.getEmployeeRegistry?.().get(fresh.employee) : undefined;
@@ -465,6 +471,51 @@ function serverError(res: ServerResponse, message: string): void {
   json(res, { error: message }, 500);
 }
 
+// ── Phase 8a: in-memory rate limiter for the create_task agent tool ──
+// Per-session counter that decays on each call. Keeps tokens cheap and
+// prevents an agent feedback loop from filing 200 tasks in a minute.
+const CREATE_TASK_RATE_LIMIT_PER_HOUR = 20;
+const _createTaskCalls = new Map<string, number[]>(); // sessionId -> timestamps (ms)
+
+function checkCreateTaskRateLimit(sessionId: string): { allowed: boolean; remaining: number } {
+  const now = Date.now();
+  const oneHourAgo = now - 60 * 60 * 1000;
+  const calls = _createTaskCalls.get(sessionId) ?? [];
+  const fresh = calls.filter((t) => t >= oneHourAgo);
+  if (fresh.length >= CREATE_TASK_RATE_LIMIT_PER_HOUR) {
+    return { allowed: false, remaining: 0 };
+  }
+  fresh.push(now);
+  _createTaskCalls.set(sessionId, fresh);
+  return { allowed: true, remaining: CREATE_TASK_RATE_LIMIT_PER_HOUR - fresh.length };
+}
+
+/**
+ * Validate a task status transition. Returns null when allowed, an error
+ * message string when not. The design (per Project-Scoped Task-Bound Workflow):
+ *
+ *   - Allowed forward chain: backlog → todo → in-progress → waiting → review → done
+ *   - Backward transitions are allowed (manual unblock by the operator).
+ *   - "stalled" is set by the phase-6 reconciler from any non-terminal status,
+ *     and may transition to "todo" (re-dispatch) or "done" (close-as-failed).
+ *   - "done" is terminal one-way — no transition out (filing a follow-up uses
+ *     supersedesTaskId on a new task).
+ */
+type TaskStatusName =
+  | "backlog" | "todo" | "in-progress" | "waiting" | "review" | "done" | "stalled";
+
+export function validateTaskStatusTransition(from: TaskStatusName, to: TaskStatusName): string | null {
+  if (from === to) return null;
+  if (from === "done") return "Task is closed (done); file a new task linked via supersedesTaskId";
+  if (to === "stalled") return "stalled status is set by the reconciler, not via PATCH";
+  if (from === "stalled" && !["todo", "done"].includes(to)) {
+    return "stalled tasks can only move to todo (re-dispatch) or done (close-as-failed)";
+  }
+  const allowed: TaskStatusName[] = ["backlog", "todo", "in-progress", "waiting", "review", "done"];
+  if (!allowed.includes(to)) return `unknown task status: ${to}`;
+  return null;
+}
+
 const SANITIZED_KEYS = new Set(["token", "botToken", "signingSecret", "appToken"]);
 
 /**
@@ -636,11 +687,13 @@ export async function handleApiRequest(
     // GET /api/sessions
     //   ?group=<employee|__direct__|__cron__>&offset=M&limit=N → one group's page (sidebar "load more")
     //   ?limit=0                                              → every session (power-user escape hatch)
+    //   ?organisation=<id>                                    → filter to one Organisation (Phase 2)
     //   (default)                                             → top PER_GROUP recent per group + counts
     if (method === "GET" && pathname === "/api/sessions") {
+      const organisationId = url.searchParams.get("organisation") || undefined;
       const query = url.searchParams.get("q");
       if (query && query.trim()) {
-        const matches = searchSessions(query.trim());
+        const matches = searchSessions(query.trim(), 100, organisationId);
         return json(res, matches.map((session) => serializeSession(session, context)));
       }
       const group = url.searchParams.get("group");
@@ -648,18 +701,18 @@ export async function handleApiRequest(
       if (group) {
         const limit = Math.max(1, parseInt(rawLimit || "50", 10) || 50);
         const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0", 10) || 0);
-        const page = listSessionsForGroup(group, limit, offset);
+        const page = listSessionsForGroup(group, limit, offset, organisationId);
         return json(res, page.map((session) => serializeSession(session, context)));
       }
       if (rawLimit === "0") {
-        const all = listSessions();
+        const all = listSessions(organisationId ? { organisationId } : undefined);
         return json(res, all.map((session) => serializeSession(session, context)));
       }
       const PER_GROUP = 8;
-      const sessions = listRecentPerGroup(PER_GROUP);
+      const sessions = listRecentPerGroup(PER_GROUP, organisationId);
       return json(res, {
         sessions: sessions.map((session) => serializeSession(session, context)),
-        counts: getSessionGroupCounts(),
+        counts: getSessionGroupCounts(organisationId),
         perGroup: PER_GROUP,
       });
     }
@@ -1074,6 +1127,97 @@ export async function handleApiRequest(
       const config = context.getConfig();
       const engineName = body.engine || config.engines.default;
       const sessionKey = `web:${Date.now()}`;
+
+      // ── Phase 5: task binding, per-task reuse, audit row ─────────────
+      const {
+        getOrganisation,
+        listOrganisations,
+        getTask,
+        findChildSessionByEmployeeAndTask,
+        findEmployeeIndexByName,
+      } = await import("../sessions/registry.js");
+
+      let taskId: string | null = null;
+      let organisationId: string | null = null;
+      let parentSession: Session | undefined;
+
+      if (body.parentSessionId) {
+        parentSession = getSession(body.parentSessionId);
+        // Children inherit organisation_id + task_id from their parent. The
+        // body cannot override this — there is no API surface for retargeting
+        // a child to a different task.
+        if (parentSession) {
+          organisationId = parentSession.organisationId ?? null;
+          taskId = parentSession.taskId ?? null;
+        }
+      }
+
+      // If no parent (and so no inherited binding), accept explicit taskId from body.
+      if (!taskId && typeof body.taskId === "string" && body.taskId) {
+        const task = getTask(body.taskId);
+        if (!task) return badRequest(res, "taskId references unknown task");
+        if (!["in-progress", "waiting", "review", "todo"].includes(task.status)) {
+          return badRequest(
+            res,
+            `taskId refers to a task in '${task.status}' status; cannot bind a session to it`,
+          );
+        }
+        taskId = task.id;
+        organisationId = task.organisationId;
+      }
+
+      // For untracked sessions, default to the first Organisation so phase 2
+      // sidebar filtering works. Once an explicit ?organisation=<id> arrives
+      // (sidebar-initiated chats) we can refine this; for now first wins.
+      if (!organisationId) {
+        if (typeof body.organisationId === "string" && body.organisationId) {
+          if (!getOrganisation(body.organisationId)) {
+            return badRequest(res, "organisationId references unknown Organisation");
+          }
+          organisationId = body.organisationId;
+        } else {
+          const first = listOrganisations()[0];
+          if (first) organisationId = first.id;
+        }
+      }
+
+      // Per-task uniqueness: if a (employee, taskId) pair already has a live
+      // session, return that one instead of creating a new row. Re-delegations
+      // to the same employee on the same task reuse the chat.
+      if (taskId && body.employee) {
+        const existing = findChildSessionByEmployeeAndTask(body.employee, taskId);
+        if (existing) {
+          // Append the new prompt as a user message + enqueue so the existing
+          // session resumes work. The parent's audit-row is still written so
+          // there's a trace of the second delegation.
+          insertMessage(existing.id, "user", prompt);
+          if (body.parentSessionId) {
+            insertMessage(body.parentSessionId, "delegation", JSON.stringify({
+              child_session_id: existing.id,
+              child_employee: body.employee,
+              task_id: taskId,
+              reused: true,
+              prompt_preview: String(prompt).slice(0, 200),
+            }));
+          }
+          const queueItemId = enqueueQueueItem(existing.id, existing.sessionKey || existing.sourceRef || existing.id, prompt);
+          context.emit("queue:updated", { sessionId: existing.id, sessionKey: existing.sessionKey });
+          // Fire engine asynchronously
+          const engineForExisting = context.sessionManager.getEngine(existing.engine);
+          if (engineForExisting) {
+            dispatchWebSessionRun(existing, prompt, engineForExisting, config, context, { queueItemId });
+          }
+          return json(res, serializeSession(existing, context), 200);
+        }
+      }
+
+      // Resolve employee_id from the synthetic index (when the employee + org are known).
+      let employeeId: string | null = null;
+      if (body.employee && organisationId) {
+        const idxRow = findEmployeeIndexByName(organisationId, body.employee);
+        if (idxRow) employeeId = idxRow.id;
+      }
+
       const session = createSession({
         engine: engineName,
         source: "web",
@@ -1092,9 +1236,25 @@ export async function handleApiRequest(
         model: body.model,
         prompt,
         portalName: config.portal?.portalName,
+        organisationId,
+        taskId,
+        employeeId,
       });
-      logger.info(`Web session created: ${session.id} (model=${body.model || "default"})`);
+      logger.info(`Web session created: ${session.id} (model=${body.model || "default"}, taskId=${taskId ?? "none"}, orgId=${organisationId ?? "none"})`);
       insertMessage(session.id, "user", prompt);
+
+      // Phase 5e: write an audit-trail delegation row on the parent's messages
+      // table whenever this is a child spawn. Lets Jinn's UI + the archive
+      // grouper reconstruct delegation timelines without parsing Claude's JSONL.
+      if (body.parentSessionId) {
+        insertMessage(body.parentSessionId, "delegation", JSON.stringify({
+          child_session_id: session.id,
+          child_employee: body.employee ?? null,
+          task_id: taskId,
+          reused: false,
+          prompt_preview: String(prompt).slice(0, 200),
+        }));
+      }
 
       // Run engine asynchronously — respond immediately, push result via WebSocket.
       // CLI-mode session creation (mode: "interactive") uses the PTY-backed engine
@@ -1238,8 +1398,16 @@ export async function handleApiRequest(
     }
 
     // GET /api/cron
+    //   ?organisation=<id> → filter to one Organisation (Phase 2). Cron jobs without an
+    //                        organisation_id in the synthetic index are excluded.
     if (method === "GET" && pathname === "/api/cron") {
-      const jobs = loadJobs();
+      const organisationId = url.searchParams.get("organisation") || undefined;
+      let jobs = loadJobs();
+      if (organisationId) {
+        const { listCronJobIndex } = await import("../sessions/registry.js");
+        const indexed = new Set(listCronJobIndex(organisationId).map((row) => row.id));
+        jobs = jobs.filter((job) => indexed.has(job.id));
+      }
       // Enrich with last run status
       const enriched = jobs.map((job) => {
         const runFile = path.join(CRON_RUNS, `${job.id}.jsonl`);
@@ -1346,16 +1514,300 @@ export async function handleApiRequest(
     }
 
     // GET /api/org
+    // GET /api/organisations — list Organisations (Phase 1: read-only).
+    if (method === "GET" && pathname === "/api/organisations") {
+      const { listOrganisations } = await import("../sessions/registry.js");
+      const orgs = listOrganisations();
+      return json(res, orgs);
+    }
+
+    // GET /api/organisations/:id — single Organisation detail (Phase 1: read-only).
+    params = matchRoute("/api/organisations/:id", pathname);
+    if (method === "GET" && params) {
+      const { getOrganisation } = await import("../sessions/registry.js");
+      const org = getOrganisation(params.id);
+      if (!org) return notFound(res);
+      return json(res, org);
+    }
+
+    // PATCH /api/organisations/:id — update name, lead_employee_id, wip_cap (Phase 6).
+    params = matchRoute("/api/organisations/:id", pathname);
+    if (method === "PATCH" && params) {
+      const { getOrganisation, updateOrganisation } = await import("../sessions/registry.js");
+      const org = getOrganisation(params.id);
+      if (!org) return notFound(res);
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+      const updates: { name?: string; leadEmployeeId?: string | null; wipCap?: number } = {};
+      if (body.name !== undefined) {
+        if (typeof body.name !== "string" || !body.name.trim()) return badRequest(res, "name must be a non-empty string");
+        updates.name = body.name.trim();
+      }
+      if (body.leadEmployeeId !== undefined) {
+        if (body.leadEmployeeId !== null && typeof body.leadEmployeeId !== "string") {
+          return badRequest(res, "leadEmployeeId must be a string or null");
+        }
+        updates.leadEmployeeId = body.leadEmployeeId;
+      }
+      if (body.wipCap !== undefined) {
+        if (typeof body.wipCap !== "number" || !Number.isFinite(body.wipCap) || body.wipCap < 1) {
+          return badRequest(res, "wipCap must be a positive integer");
+        }
+        updates.wipCap = Math.floor(body.wipCap);
+      }
+      const updated = updateOrganisation(params.id, updates);
+      if (updates.wipCap !== undefined && updates.wipCap !== org.wipCap) {
+        context.emit("organisation:cap-changed", { organisationId: org.id, wipCap: updates.wipCap });
+      }
+      context.emit("organisation:updated", { organisation: updated });
+      return json(res, updated);
+    }
+
+    // ── Tasks API (Phase 3) ────────────────────────────────────────
+    // Status transition rules (validated by validateTaskStatusTransition):
+    //   backlog ↔ todo ↔ in-progress ↔ waiting ↔ review ↔ done
+    //   Any status → stalled (set by reconciler, phase 6) → todo (re-dispatch) | done (close-as-failed)
+    //   Closed (done) tasks: terminal. No re-open. Filing a follow-up uses
+    //                        supersedesTaskId on a new task.
+
+    // GET /api/organisations/:orgId/tasks — list (optionally filterable by ?status=)
+    params = matchRoute("/api/organisations/:orgId/tasks", pathname);
+    if (method === "GET" && params) {
+      const { getOrganisation, listTasks } = await import("../sessions/registry.js");
+      if (!getOrganisation(params.orgId)) return notFound(res);
+      const status = url.searchParams.get("status") as
+        | "backlog" | "todo" | "in-progress" | "waiting" | "review" | "done" | "stalled"
+        | null;
+      const tasks = listTasks({ organisationId: params.orgId, status: status ?? undefined });
+      return json(res, tasks);
+    }
+
+    // POST /api/organisations/:orgId/tasks — create
+    params = matchRoute("/api/organisations/:orgId/tasks", pathname);
+    if (method === "POST" && params) {
+      const { getOrganisation, createTask, getTask } = await import("../sessions/registry.js");
+      if (!getOrganisation(params.orgId)) return notFound(res);
+      const parsed = await readJsonBody(req, res);
+      if (!parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = parsed.body as any;
+      if (typeof body.title !== "string" || !body.title.trim()) {
+        return badRequest(res, "title is required");
+      }
+      const priority = body.priority as "low" | "med" | "high" | undefined;
+      if (priority !== undefined && !["low", "med", "high"].includes(priority)) {
+        return badRequest(res, "priority must be one of low | med | high");
+      }
+      const status = body.status as
+        | "backlog" | "todo" | "in-progress" | "waiting" | "review" | "done"
+        | undefined;
+      if (status !== undefined && !["backlog", "todo", "in-progress", "waiting", "review", "done"].includes(status)) {
+        return badRequest(res, "status must be a valid task status");
+      }
+      if (body.supersedesTaskId !== undefined && body.supersedesTaskId !== null) {
+        if (typeof body.supersedesTaskId !== "string") return badRequest(res, "supersedesTaskId must be a string");
+        if (!getTask(body.supersedesTaskId)) return badRequest(res, "supersedesTaskId references unknown task");
+      }
+      const task = createTask({
+        organisationId: params.orgId,
+        title: body.title.trim(),
+        description: typeof body.description === "string" ? body.description : "",
+        priority,
+        status,
+        supersedesTaskId: body.supersedesTaskId ?? null,
+      });
+      context.emit("task:created", { task });
+      return json(res, task, 201);
+    }
+
+    // GET /api/tasks/:id — single task detail
+    params = matchRoute("/api/tasks/:id", pathname);
+    if (method === "GET" && params) {
+      const { getTask } = await import("../sessions/registry.js");
+      const task = getTask(params.id);
+      if (!task) return notFound(res);
+      return json(res, task);
+    }
+
+    // PATCH /api/tasks/:id — update fields and/or transition status
+    params = matchRoute("/api/tasks/:id", pathname);
+    if (method === "PATCH" && params) {
+      const { getTask, updateTask } = await import("../sessions/registry.js");
+      const existing = getTask(params.id);
+      if (!existing) return notFound(res);
+      const parsed = await readJsonBody(req, res);
+      if (!parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = parsed.body as any;
+
+      const updates: Parameters<typeof updateTask>[1] = {};
+      if (body.title !== undefined) {
+        if (typeof body.title !== "string" || !body.title.trim()) return badRequest(res, "title must be a non-empty string");
+        updates.title = body.title.trim();
+      }
+      if (body.description !== undefined) {
+        if (typeof body.description !== "string") return badRequest(res, "description must be a string");
+        updates.description = body.description;
+      }
+      if (body.priority !== undefined) {
+        if (!["low", "med", "high"].includes(body.priority)) return badRequest(res, "priority must be low | med | high");
+        updates.priority = body.priority;
+      }
+      if (body.status !== undefined) {
+        const next = body.status as
+          | "backlog" | "todo" | "in-progress" | "waiting" | "review" | "done" | "stalled";
+        const transitionErr = validateTaskStatusTransition(existing.status, next);
+        if (transitionErr) return badRequest(res, transitionErr);
+        updates.status = next;
+        if (next === "done" && existing.status !== "done") {
+          updates.closedAt = new Date().toISOString();
+        }
+      }
+      if (body.leadSessionId !== undefined) {
+        if (body.leadSessionId !== null && typeof body.leadSessionId !== "string") {
+          return badRequest(res, "leadSessionId must be a string or null");
+        }
+        updates.leadSessionId = body.leadSessionId;
+      }
+
+      const updated = updateTask(params.id, updates);
+      if (!updated) return notFound(res);
+      if (updates.status && updates.status !== existing.status) {
+        context.emit("task:status-changed", { task: updated, from: existing.status, to: updates.status });
+        if (updates.status === "todo" && existing.status === "backlog") {
+          context.emit("task:promoted-to-todo", { task: updated });
+        }
+      } else {
+        context.emit("task:updated", { task: updated });
+      }
+      return json(res, updated);
+    }
+
+    // POST /api/tasks/:id/close — terminal close. Sets status=done, closed_at,
+    // archives every bound session (no successor — task is terminal), emits task:closed.
+    params = matchRoute("/api/tasks/:id/close", pathname);
+    if (method === "POST" && params) {
+      const { getTask, updateTask, listSessionsForTask, markSessionArchived } = await import("../sessions/registry.js");
+      const existing = getTask(params.id);
+      if (!existing) return notFound(res);
+      if (existing.status === "done") return badRequest(res, "Task is already closed");
+
+      // Phase 7: archive every session bound to this task. No summary is
+      // generated — task-close has no successor that would consume one.
+      const bound = listSessionsForTask(params.id);
+      let archivedCount = 0;
+      for (const s of bound) {
+        if (s.status !== "archived") {
+          if (markSessionArchived(s.id)) archivedCount += 1;
+        }
+      }
+
+      const closed = updateTask(params.id, {
+        status: "done",
+        closedAt: new Date().toISOString(),
+      });
+      context.emit("task:closed", { task: closed, archivedSessions: archivedCount });
+      logger.info(`[tasks] Closed task ${params.id} — archived ${archivedCount} bound session(s)`);
+      return json(res, { ...closed, archivedSessions: archivedCount });
+    }
+
+    // POST /api/sessions/:sessionId/tools/create-task — Phase 8a.
+    //
+    // Agent-facing tool. The caller is the session executing the request;
+    // we derive its organisation_id + employee from the session row and apply
+    // a 20/hour per-session rate limit. Tool is restricted to executive +
+    // director ranks (or any employee with `provides.create_task: true`).
+    params = matchRoute("/api/sessions/:sessionId/tools/create-task", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.sessionId);
+      if (!session) return notFound(res);
+
+      // Resolve calling employee's rank.
+      const registry = context.getEmployeeRegistry?.();
+      const emp = session.employee ? registry?.get(session.employee) : undefined;
+      const allowedRanks = ["executive", "manager"]; // includes COO + directors-as-managers
+      const explicitlyEnabled = !!emp?.provides?.some((s) => s.name === "create_task");
+      const rankAllowed = !emp || allowedRanks.includes(emp.rank);
+      if (!explicitlyEnabled && !rankAllowed) {
+        return json(res, { error: `Employee "${emp?.name ?? session.employee}" is not allowed to call create_task. Required rank: executive or manager.` }, 403);
+      }
+
+      const limit = checkCreateTaskRateLimit(params.sessionId);
+      if (!limit.allowed) {
+        return json(res, { error: `Rate limit exceeded: ${CREATE_TASK_RATE_LIMIT_PER_HOUR} create_task calls per hour per session.` }, 429);
+      }
+
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+      if (typeof body.title !== "string" || !body.title.trim()) return badRequest(res, "title is required");
+      if (!session.organisationId) return badRequest(res, "Calling session has no organisationId");
+
+      const status = body.promote_to_todo ? "todo" : body.status ?? "backlog";
+      const { createTask } = await import("../sessions/registry.js");
+      const task = createTask({
+        organisationId: session.organisationId,
+        title: body.title.trim(),
+        description: typeof body.description === "string" ? body.description : "",
+        priority: body.priority ?? "med",
+        status,
+        supersedesTaskId: body.supersedes_task_id ?? null,
+      });
+      context.emit("task:created", { task, via: "tool" });
+      if (status === "todo") context.emit("task:promoted-to-todo", { task });
+      return json(res, { id: task.id, status: task.status, remainingCalls: limit.remaining }, 201);
+    }
+
+    // POST /api/tasks/:id/redispatch — Phase 6. Clear lead_session_id + move
+    // status back to 'todo' so the picker grabs the task again on the next tick.
+    params = matchRoute("/api/tasks/:id/redispatch", pathname);
+    if (method === "POST" && params) {
+      const { getTask, updateTask } = await import("../sessions/registry.js");
+      const existing = getTask(params.id);
+      if (!existing) return notFound(res);
+      if (existing.status === "done") return badRequest(res, "Closed tasks cannot be re-dispatched");
+      const updated = updateTask(params.id, { status: "todo", leadSessionId: null });
+      context.emit("task:status-changed", { task: updated, from: existing.status, to: "todo" });
+      context.emit("task:promoted-to-todo", { task: updated });
+      return json(res, updated);
+    }
+
+    // DELETE /api/tasks/:id — hard delete. Useful for tests + accidentally-created tasks.
+    params = matchRoute("/api/tasks/:id", pathname);
+    if (method === "DELETE" && params) {
+      const { deleteTask } = await import("../sessions/registry.js");
+      const ok = deleteTask(params.id);
+      if (!ok) return notFound(res);
+      context.emit("task:deleted", { taskId: params.id });
+      return json(res, { status: "ok" });
+    }
+
     if (method === "GET" && pathname === "/api/org") {
-      if (!fs.existsSync(ORG_DIR)) return json(res, { departments: [], employees: [], hierarchy: { root: null, sorted: [], warnings: [] } });
-      const entries = fs.readdirSync(ORG_DIR, { withFileTypes: true });
+      const organisationId = url.searchParams.get("organisation") || undefined;
+      // Phase 2: when ?organisation=<id> is set, scan that Organisation's own
+      // org dir at ~/.jinn/organisations/<id>/org/ instead of the legacy
+      // ~/.jinn/org/. After Phase 1 migration, the legacy dir is gone; if no
+      // org id was provided we fall back to the first Organisation's dir so
+      // callers that haven't been Org-aware'd yet still see employees.
+      const { organisationOrgDir } = await import("../shared/paths.js");
+      const { listOrganisations } = await import("../sessions/registry.js");
+      let scanRoot = organisationId ? organisationOrgDir(organisationId) : ORG_DIR;
+      if (!fs.existsSync(scanRoot)) {
+        const firstOrg = listOrganisations()[0];
+        if (firstOrg) scanRoot = organisationOrgDir(firstOrg.id);
+      }
+      if (!fs.existsSync(scanRoot)) return json(res, { departments: [], employees: [], hierarchy: { root: null, sorted: [], warnings: [] } });
+      const entries = fs.readdirSync(scanRoot, { withFileTypes: true });
       const departments = entries
         .filter((e) => e.isDirectory())
         .map((e) => e.name);
 
-      const { scanOrg } = await import("./org.js");
+      const { scanOrg, scanOrgFromDir } = await import("./org.js");
       const { resolveOrgHierarchy } = await import("./org-hierarchy.js");
-      const orgRegistry = scanOrg();
+      const orgRegistry = organisationId ? scanOrgFromDir(scanRoot) : scanOrg();
       const hierarchy = resolveOrgHierarchy(orgRegistry);
 
       const employees = hierarchy.sorted.map((name) => {
@@ -1443,43 +1895,59 @@ export async function handleApiRequest(
     }
 
     // GET /api/skills
+    //   ?organisation=<id> → merge per-Org overlay at ~/.jinn/organisations/<id>/skills/
+    //                        on top of global ~/.jinn/skills/. Per-Org wins on name
+    //                        collision (Phase 8c — mirrors Claude Code's .claude/skills
+    //                        precedence model).
     if (method === "GET" && pathname === "/api/skills") {
-      if (!fs.existsSync(SKILLS_DIR)) return json(res, []);
-      const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true });
-      const skills = entries.filter((e) => e.isDirectory()).map((e) => {
-        const skillMdPath = path.join(SKILLS_DIR, e.name, "SKILL.md");
-        let description = "";
-        if (fs.existsSync(skillMdPath)) {
-          const content = fs.readFileSync(skillMdPath, "utf-8");
-          // Extract description from YAML frontmatter, ## Trigger section, or first paragraph
-          const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
-          if (frontmatterMatch) {
-            const descMatch = frontmatterMatch[1].match(/^description:\s*(.+)$/m);
-            if (descMatch) {
-              description = descMatch[1].trim();
+      const organisationId = url.searchParams.get("organisation") || undefined;
+      const { organisationSkillsDir } = await import("../shared/paths.js");
+      const dirs: string[] = [];
+      if (organisationId) {
+        const perOrg = organisationSkillsDir(organisationId);
+        if (fs.existsSync(perOrg)) dirs.push(perOrg);
+      }
+      if (fs.existsSync(SKILLS_DIR)) dirs.push(SKILLS_DIR);
+      if (dirs.length === 0) return json(res, []);
+
+      // Merge order: earlier dirs win on collision (per-Org first).
+      const byName = new Map<string, { name: string; description: string; source: "organisation" | "global" }>();
+      for (const dir of dirs) {
+        const source: "organisation" | "global" = dir === SKILLS_DIR ? "global" : "organisation";
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          if (!e.isDirectory()) continue;
+          if (byName.has(e.name)) continue; // first wins (per-Org overlay)
+          const skillMdPath = path.join(dir, e.name, "SKILL.md");
+          let description = "";
+          if (fs.existsSync(skillMdPath)) {
+            const content = fs.readFileSync(skillMdPath, "utf-8");
+            const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+            if (frontmatterMatch) {
+              const descMatch = frontmatterMatch[1].match(/^description:\s*(.+)$/m);
+              if (descMatch) description = descMatch[1].trim();
             }
-          }
-          if (!description) {
-            const triggerMatch = content.match(/##\s*Trigger\s*\n+([^\n#]+)/);
-            if (triggerMatch) {
-              description = triggerMatch[1].trim();
-            } else {
-              // Use first non-heading, non-empty, non-frontmatter line
-              const bodyContent = frontmatterMatch ? content.slice(frontmatterMatch[0].length) : content;
-              const lines = bodyContent.split("\n");
-              for (const line of lines) {
-                const trimmed = line.trim();
-                if (trimmed && !trimmed.startsWith("#")) {
-                  description = trimmed;
-                  break;
+            if (!description) {
+              const triggerMatch = content.match(/##\s*Trigger\s*\n+([^\n#]+)/);
+              if (triggerMatch) {
+                description = triggerMatch[1].trim();
+              } else {
+                const bodyContent = frontmatterMatch ? content.slice(frontmatterMatch[0].length) : content;
+                const lines = bodyContent.split("\n");
+                for (const line of lines) {
+                  const trimmed = line.trim();
+                  if (trimmed && !trimmed.startsWith("#")) {
+                    description = trimmed;
+                    break;
+                  }
                 }
               }
             }
           }
+          byName.set(e.name, { name: e.name, description, source });
         }
-        return { name: e.name, description };
-      });
-      return json(res, skills);
+      }
+      return json(res, Array.from(byName.values()));
     }
 
     // GET /api/skills/:name

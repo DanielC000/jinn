@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { SESSIONS_DB } from '../shared/paths.js';
-import type { JsonObject, ReplyContext, Session } from '../shared/types.js';
+import type { CronJob, JsonObject, Organisation, ReplyContext, Session, Task, TaskPriority, TaskStatus } from '../shared/types.js';
 
 let db: Database.Database;
 
@@ -68,6 +68,81 @@ CREATE TABLE IF NOT EXISTS files (
 )
 `;
 
+// ── Project-scoped task-bound workflow (Phase 1) ─────────────────────
+//
+// Schema is added with nullable FKs to every existing table that gains one,
+// so legacy rows survive without backfill. Behavior is wired up in later
+// phases — phase 1 only lands the columns and the first-boot migration.
+
+const CREATE_ORGANISATIONS_TABLE = `
+CREATE TABLE IF NOT EXISTS organisations (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  lead_employee_id TEXT,
+  wip_cap INTEGER NOT NULL DEFAULT 3,
+  created_at TEXT NOT NULL
+)
+`;
+
+const CREATE_TASKS_TABLE = `
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  organisation_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  priority TEXT NOT NULL DEFAULT 'med',
+  status TEXT NOT NULL DEFAULT 'backlog',
+  lead_session_id TEXT,
+  supersedes_task_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT,
+  FOREIGN KEY (organisation_id) REFERENCES organisations(id),
+  FOREIGN KEY (lead_session_id) REFERENCES sessions(id),
+  FOREIGN KEY (supersedes_task_id) REFERENCES tasks(id)
+)
+`;
+
+const CREATE_TASKS_ORG_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_tasks_organisation ON tasks (organisation_id, status)
+`;
+
+const CREATE_TASKS_STATUS_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status, priority DESC, created_at ASC)
+`;
+
+const CREATE_EMPLOYEES_TABLE = `
+CREATE TABLE IF NOT EXISTS employees (
+  id TEXT PRIMARY KEY,
+  organisation_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  display_name TEXT,
+  department TEXT,
+  rank TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (organisation_id) REFERENCES organisations(id),
+  UNIQUE (organisation_id, name)
+)
+`;
+
+const CREATE_EMPLOYEES_ORG_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_employees_organisation ON employees (organisation_id)
+`;
+
+const CREATE_CRON_JOBS_TABLE = `
+CREATE TABLE IF NOT EXISTS cron_jobs (
+  id TEXT PRIMARY KEY,
+  organisation_id TEXT,
+  task_mode TEXT NOT NULL DEFAULT 'untracked',
+  task_id TEXT,
+  spec TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (organisation_id) REFERENCES organisations(id),
+  FOREIGN KEY (task_id) REFERENCES tasks(id)
+)
+`;
+
 function parseJsonObject(value: unknown): JsonObject | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   try {
@@ -110,7 +185,419 @@ function rowToSession(row: Record<string, unknown>): Session {
     archivedFrom: (row.archived_from as string) ?? null,
     summaryPrompt: (row.summary_prompt as string) ?? null,
     autoSplitDisabled: ((row.auto_split_disabled as number) ?? 0) === 1,
+    organisationId: (row.organisation_id as string) ?? null,
+    taskId: (row.task_id as string) ?? null,
+    employeeId: (row.employee_id as string) ?? null,
   };
+}
+
+// ── Organisations (Phase 1) ─────────────────────────────────────────
+
+function rowToOrganisation(row: Record<string, unknown>): Organisation {
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    leadEmployeeId: (row.lead_employee_id as string) ?? null,
+    wipCap: (row.wip_cap as number) ?? 3,
+    createdAt: row.created_at as string,
+  };
+}
+
+export interface CreateOrganisationOpts {
+  id?: string;
+  name: string;
+  leadEmployeeId?: string | null;
+  wipCap?: number;
+}
+
+export function createOrganisation(opts: CreateOrganisationOpts): Organisation {
+  const db = initDb();
+  const id = opts.id ?? uuidv4();
+  const now = new Date().toISOString();
+  const wipCap = opts.wipCap ?? 3;
+  db.prepare(
+    `INSERT INTO organisations (id, name, lead_employee_id, wip_cap, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(id, opts.name, opts.leadEmployeeId ?? null, wipCap, now);
+  return { id, name: opts.name, leadEmployeeId: opts.leadEmployeeId ?? null, wipCap, createdAt: now };
+}
+
+export function getOrganisation(id: string): Organisation | undefined {
+  const db = initDb();
+  const row = db.prepare('SELECT * FROM organisations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  return row ? rowToOrganisation(row) : undefined;
+}
+
+export function listOrganisations(): Organisation[] {
+  const db = initDb();
+  const rows = db.prepare('SELECT * FROM organisations ORDER BY created_at ASC').all() as Record<string, unknown>[];
+  return rows.map(rowToOrganisation);
+}
+
+export function updateOrganisation(
+  id: string,
+  updates: { name?: string; leadEmployeeId?: string | null; wipCap?: number },
+): Organisation | undefined {
+  const db = initDb();
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (updates.name !== undefined) {
+    sets.push('name = ?');
+    values.push(updates.name);
+  }
+  if (updates.leadEmployeeId !== undefined) {
+    sets.push('lead_employee_id = ?');
+    values.push(updates.leadEmployeeId);
+  }
+  if (updates.wipCap !== undefined) {
+    sets.push('wip_cap = ?');
+    values.push(updates.wipCap);
+  }
+  if (sets.length === 0) return getOrganisation(id);
+  values.push(id);
+  db.prepare(`UPDATE organisations SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return getOrganisation(id);
+}
+
+// ── Employees index (Phase 1) ───────────────────────────────────────
+
+export interface EmployeeIndexRow {
+  id: string;
+  organisationId: string;
+  name: string;
+  displayName: string | null;
+  department: string | null;
+  rank: string | null;
+  createdAt: string;
+}
+
+function rowToEmployeeIndex(row: Record<string, unknown>): EmployeeIndexRow {
+  return {
+    id: row.id as string,
+    organisationId: row.organisation_id as string,
+    name: row.name as string,
+    displayName: (row.display_name as string) ?? null,
+    department: (row.department as string) ?? null,
+    rank: (row.rank as string) ?? null,
+    createdAt: row.created_at as string,
+  };
+}
+
+export function upsertEmployeeIndex(
+  organisationId: string,
+  emp: { name: string; displayName?: string; department?: string; rank?: string },
+): EmployeeIndexRow {
+  const db = initDb();
+  const now = new Date().toISOString();
+  const existing = db
+    .prepare('SELECT * FROM employees WHERE organisation_id = ? AND name = ?')
+    .get(organisationId, emp.name) as Record<string, unknown> | undefined;
+  if (existing) {
+    db.prepare(
+      `UPDATE employees SET display_name = ?, department = ?, rank = ? WHERE id = ?`,
+    ).run(emp.displayName ?? null, emp.department ?? null, emp.rank ?? null, existing.id);
+    return rowToEmployeeIndex({ ...existing, display_name: emp.displayName ?? null, department: emp.department ?? null, rank: emp.rank ?? null });
+  }
+  const id = uuidv4();
+  db.prepare(
+    `INSERT INTO employees (id, organisation_id, name, display_name, department, rank, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, organisationId, emp.name, emp.displayName ?? null, emp.department ?? null, emp.rank ?? null, now);
+  return {
+    id,
+    organisationId,
+    name: emp.name,
+    displayName: emp.displayName ?? null,
+    department: emp.department ?? null,
+    rank: emp.rank ?? null,
+    createdAt: now,
+  };
+}
+
+export function listEmployeeIndex(organisationId: string): EmployeeIndexRow[] {
+  const db = initDb();
+  const rows = db
+    .prepare('SELECT * FROM employees WHERE organisation_id = ? ORDER BY name ASC')
+    .all(organisationId) as Record<string, unknown>[];
+  return rows.map(rowToEmployeeIndex);
+}
+
+export function findEmployeeIndexByName(
+  organisationId: string,
+  name: string,
+): EmployeeIndexRow | undefined {
+  const db = initDb();
+  const row = db
+    .prepare('SELECT * FROM employees WHERE organisation_id = ? AND name = ?')
+    .get(organisationId, name) as Record<string, unknown> | undefined;
+  return row ? rowToEmployeeIndex(row) : undefined;
+}
+
+// ── Cron job index (Phase 1) ────────────────────────────────────────
+//
+// Cron jobs continue to live in ~/.jinn/cron/jobs.json (today's source of truth).
+// This table is a synthetic index keyed by job id that lets later phases attach
+// task_id / organisation_id / task_mode without changing the JSON shape.
+
+export interface CronJobIndexRow {
+  id: string;
+  organisationId: string | null;
+  taskMode: "untracked" | "create-task" | "resume-task";
+  taskId: string | null;
+  spec: CronJob;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function rowToCronJobIndex(row: Record<string, unknown>): CronJobIndexRow {
+  return {
+    id: row.id as string,
+    organisationId: (row.organisation_id as string) ?? null,
+    taskMode: ((row.task_mode as string) ?? "untracked") as CronJobIndexRow["taskMode"],
+    taskId: (row.task_id as string) ?? null,
+    spec: JSON.parse((row.spec as string) || "{}") as CronJob,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
+}
+
+export function upsertCronJobIndex(
+  job: CronJob,
+  organisationId: string | null,
+  opts: { taskMode?: CronJobIndexRow["taskMode"]; taskId?: string | null } = {},
+): CronJobIndexRow {
+  const db = initDb();
+  const now = new Date().toISOString();
+  const taskMode = opts.taskMode ?? job.taskMode ?? "untracked";
+  const taskId = opts.taskId ?? job.taskId ?? null;
+  const existing = db.prepare('SELECT * FROM cron_jobs WHERE id = ?').get(job.id) as Record<string, unknown> | undefined;
+  if (existing) {
+    db.prepare(
+      `UPDATE cron_jobs SET organisation_id = ?, task_mode = ?, task_id = ?, spec = ?, updated_at = ? WHERE id = ?`,
+    ).run(organisationId, taskMode, taskId, JSON.stringify(job), now, job.id);
+    return rowToCronJobIndex({ ...existing, organisation_id: organisationId, task_mode: taskMode, task_id: taskId, spec: JSON.stringify(job), updated_at: now });
+  }
+  db.prepare(
+    `INSERT INTO cron_jobs (id, organisation_id, task_mode, task_id, spec, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(job.id, organisationId, taskMode, taskId, JSON.stringify(job), now, now);
+  return {
+    id: job.id,
+    organisationId,
+    taskMode,
+    taskId,
+    spec: job,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function listCronJobIndex(organisationId?: string): CronJobIndexRow[] {
+  const db = initDb();
+  const rows = organisationId
+    ? db.prepare('SELECT * FROM cron_jobs WHERE organisation_id = ? ORDER BY created_at ASC').all(organisationId)
+    : db.prepare('SELECT * FROM cron_jobs ORDER BY created_at ASC').all();
+  return (rows as Record<string, unknown>[]).map(rowToCronJobIndex);
+}
+
+// ── Tasks (Phase 1: skeleton helpers; full CRUD lands in phase 3) ──
+
+function rowToTask(row: Record<string, unknown>): Task {
+  return {
+    id: row.id as string,
+    organisationId: row.organisation_id as string,
+    title: row.title as string,
+    description: (row.description as string) ?? '',
+    priority: ((row.priority as string) ?? 'med') as TaskPriority,
+    status: row.status as TaskStatus,
+    leadSessionId: (row.lead_session_id as string) ?? null,
+    supersedesTaskId: (row.supersedes_task_id as string) ?? null,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+    closedAt: (row.closed_at as string) ?? null,
+  };
+}
+
+export interface CreateTaskOpts {
+  id?: string;
+  organisationId: string;
+  title: string;
+  description?: string;
+  priority?: TaskPriority;
+  status?: TaskStatus;
+  supersedesTaskId?: string | null;
+}
+
+export function createTask(opts: CreateTaskOpts): Task {
+  const db = initDb();
+  const id = opts.id ?? uuidv4();
+  const now = new Date().toISOString();
+  const status = opts.status ?? 'backlog';
+  const priority = opts.priority ?? 'med';
+  db.prepare(
+    `INSERT INTO tasks (id, organisation_id, title, description, priority, status, supersedes_task_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    opts.organisationId,
+    opts.title,
+    opts.description ?? '',
+    priority,
+    status,
+    opts.supersedesTaskId ?? null,
+    now,
+    now,
+  );
+  return {
+    id,
+    organisationId: opts.organisationId,
+    title: opts.title,
+    description: opts.description ?? '',
+    priority,
+    status,
+    leadSessionId: null,
+    supersedesTaskId: opts.supersedesTaskId ?? null,
+    createdAt: now,
+    updatedAt: now,
+    closedAt: null,
+  };
+}
+
+export function getTask(id: string): Task | undefined {
+  const db = initDb();
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  return row ? rowToTask(row) : undefined;
+}
+
+export function listTasks(filter: { organisationId?: string; status?: TaskStatus } = {}): Task[] {
+  const db = initDb();
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+  if (filter.organisationId) {
+    conditions.push('organisation_id = ?');
+    values.push(filter.organisationId);
+  }
+  if (filter.status) {
+    conditions.push('status = ?');
+    values.push(filter.status);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = db
+    .prepare(`SELECT * FROM tasks ${where} ORDER BY created_at ASC`)
+    .all(...values) as Record<string, unknown>[];
+  return rows.map(rowToTask);
+}
+
+export interface UpdateTaskFields {
+  title?: string;
+  description?: string;
+  priority?: TaskPriority;
+  status?: TaskStatus;
+  leadSessionId?: string | null;
+  supersedesTaskId?: string | null;
+  closedAt?: string | null;
+}
+
+export function updateTask(id: string, updates: UpdateTaskFields): Task | undefined {
+  const db = initDb();
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (updates.title !== undefined) {
+    sets.push('title = ?');
+    values.push(updates.title);
+  }
+  if (updates.description !== undefined) {
+    sets.push('description = ?');
+    values.push(updates.description);
+  }
+  if (updates.priority !== undefined) {
+    sets.push('priority = ?');
+    values.push(updates.priority);
+  }
+  if (updates.status !== undefined) {
+    sets.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.leadSessionId !== undefined) {
+    sets.push('lead_session_id = ?');
+    values.push(updates.leadSessionId);
+  }
+  if (updates.supersedesTaskId !== undefined) {
+    sets.push('supersedes_task_id = ?');
+    values.push(updates.supersedesTaskId);
+  }
+  if (updates.closedAt !== undefined) {
+    sets.push('closed_at = ?');
+    values.push(updates.closedAt);
+  }
+  if (sets.length === 0) return getTask(id);
+  sets.push('updated_at = ?');
+  values.push(new Date().toISOString());
+  values.push(id);
+  db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return getTask(id);
+}
+
+export function deleteTask(id: string): boolean {
+  const db = initDb();
+  const result = db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+  return result.changes > 0;
+}
+
+/**
+ * Phase 7: terminal-archive a session without spawning a successor.
+ *
+ * Unlike archiveSession() in archive.ts (which is for the auto-split flow and
+ * creates a "[continued]" successor session), task-close archives are a one-way
+ * terminal move — the task is closed, so there's nothing to continue. Children
+ * keep pointing at this row (they get archived via the same task-close sweep).
+ *
+ * Returns true when a row was archived, false when the session was already in
+ * a terminal state or not found.
+ */
+export function markSessionArchived(id: string): boolean {
+  const db = initDb();
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE sessions SET status = 'archived', archived_at = ?, last_activity = ?
+       WHERE id = ? AND status != 'archived'`,
+    )
+    .run(now, now, id);
+  return result.changes > 0;
+}
+
+/** Phase 7: list sessions bound to a task (any status). */
+export function listSessionsForTask(taskId: string): Session[] {
+  const db = initDb();
+  const rows = db
+    .prepare(`SELECT * FROM sessions WHERE task_id = ? ORDER BY created_at ASC`)
+    .all(taskId) as Record<string, unknown>[];
+  return rows.map(rowToSession);
+}
+
+/**
+ * Phase 5: find an existing session for (employee, taskId). Returns null when
+ * no live session exists. "Live" means any status except 'archived'.
+ *
+ * Per-task uniqueness rule: exactly one session per (employee, task_id) pair.
+ * Re-delegations to the same employee on the same task reuse this session
+ * instead of spawning a new one. Two parents delegating to the same junior
+ * end up at the same row (first parent wins on parent_session_id).
+ */
+export function findChildSessionByEmployeeAndTask(
+  employee: string,
+  taskId: string,
+): Session | undefined {
+  const db = initDb();
+  const row = db
+    .prepare(
+      `SELECT * FROM sessions
+       WHERE employee = ? AND task_id = ? AND status != 'archived'
+       ORDER BY last_activity DESC LIMIT 1`,
+    )
+    .get(employee, taskId) as Record<string, unknown> | undefined;
+  return row ? rowToSession(row) : undefined;
 }
 
 export function initDb(): Database.Database {
@@ -141,6 +628,14 @@ export function initDb(): Database.Database {
       ON queue_items (session_key, status, position);
   `);
   db.exec(CREATE_FILES_TABLE);
+  // Project-scoped task-bound workflow (Phase 1): tables + indexes.
+  db.exec(CREATE_ORGANISATIONS_TABLE);
+  db.exec(CREATE_TASKS_TABLE);
+  db.exec(CREATE_TASKS_ORG_INDEX);
+  db.exec(CREATE_TASKS_STATUS_INDEX);
+  db.exec(CREATE_EMPLOYEES_TABLE);
+  db.exec(CREATE_EMPLOYEES_ORG_INDEX);
+  db.exec(CREATE_CRON_JOBS_TABLE);
 
   return db;
 }
@@ -165,6 +660,11 @@ export function migrateSessionsSchema(database: Database.Database): void {
     ['archived_from', 'TEXT'],
     ['summary_prompt', 'TEXT'],
     ['auto_split_disabled', 'INTEGER', '0'],
+    // Project-scoped task-bound workflow (Phase 1): nullable FKs to new tables.
+    // Become NOT NULL in phase 5 once the per-task binding is fully wired.
+    ['organisation_id', 'TEXT'],
+    ['task_id', 'TEXT'],
+    ['employee_id', 'TEXT'],
   ];
 
   for (const [name, type, defaultVal] of missingColumns) {
@@ -198,6 +698,10 @@ export interface CreateSessionOpts {
   title?: string;
   parentSessionId?: string;
   effortLevel?: string;
+  // Project-scoped task-bound workflow (Phase 1+):
+  organisationId?: string | null;
+  taskId?: string | null;
+  employeeId?: string | null;
 }
 
 function getNextSessionNumber(): number {
@@ -228,9 +732,10 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
   const stmt = db.prepare(`
     INSERT INTO sessions (
       id, engine, source, source_ref, connector, session_key, reply_context, message_id, transport_meta,
-      employee, model, title, parent_session_id, effort_level, status, created_at, last_activity
+      employee, model, title, parent_session_id, effort_level, status, created_at, last_activity,
+      organisation_id, task_id, employee_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, ?, ?)
   `);
   stmt.run(
     id,
@@ -249,6 +754,9 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     opts.effortLevel ?? null,
     now,
     now,
+    opts.organisationId ?? null,
+    opts.taskId ?? null,
+    opts.employeeId ?? null,
   );
 
   return {
@@ -278,6 +786,9 @@ export function createSession(opts: CreateSessionOpts & { prompt?: string; porta
     archivedFrom: null,
     summaryPrompt: null,
     autoSplitDisabled: false,
+    organisationId: opts.organisationId ?? null,
+    taskId: opts.taskId ?? null,
+    employeeId: opts.employeeId ?? null,
   };
 }
 
@@ -393,6 +904,8 @@ export interface ListSessionsFilter {
   status?: Session['status'];
   source?: string;
   engine?: string;
+  /** Phase 2: when set, restricts to sessions in this Organisation. */
+  organisationId?: string;
 }
 
 export function listSessions(filter?: ListSessionsFilter): Session[] {
@@ -411,6 +924,10 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
   if (filter?.engine) {
     conditions.push('engine = ?');
     values.push(filter.engine);
+  }
+  if (filter?.organisationId) {
+    conditions.push('organisation_id = ?');
+    values.push(filter.organisationId);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -439,42 +956,53 @@ function groupFilter(group: string): { clause: string; params: unknown[] } {
 }
 
 /** Most-recent `perGroup` sessions for each group — the bounded default payload. */
-export function listRecentPerGroup(perGroup: number): Session[] {
+export function listRecentPerGroup(perGroup: number, organisationId?: string): Session[] {
   const db = initDb();
+  const orgClause = organisationId ? 'WHERE organisation_id = ?' : '';
+  const orgParams = organisationId ? [organisationId] : [];
   const rows = db
     .prepare(
       `SELECT * FROM (
          SELECT *, ROW_NUMBER() OVER (PARTITION BY ${GROUP_KEY_SQL} ORDER BY last_activity DESC) AS __rn
-         FROM sessions
+         FROM sessions ${orgClause}
        ) WHERE __rn <= ? ORDER BY last_activity DESC`,
     )
-    .all(perGroup) as Record<string, unknown>[];
+    .all(...orgParams, perGroup) as Record<string, unknown>[];
   return rows.map(rowToSession);
 }
 
 /** One group's sessions, newest first — used by the sidebar "load more" button. */
-export function listSessionsForGroup(group: string, limit: number, offset: number): Session[] {
+export function listSessionsForGroup(
+  group: string,
+  limit: number,
+  offset: number,
+  organisationId?: string,
+): Session[] {
   const db = initDb();
   const { clause, params } = groupFilter(group);
+  const orgClause = organisationId ? ' AND organisation_id = ?' : '';
+  const orgParams = organisationId ? [organisationId] : [];
   const rows = db
     .prepare(
-      `SELECT * FROM sessions WHERE ${clause} ORDER BY last_activity DESC LIMIT ? OFFSET ?`,
+      `SELECT * FROM sessions WHERE ${clause}${orgClause} ORDER BY last_activity DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit, offset) as Record<string, unknown>[];
+    .all(...params, ...orgParams, limit, offset) as Record<string, unknown>[];
   return rows.map(rowToSession);
 }
 
 /** Search across ALL sessions by title / employee / id (newest first, bounded). */
-export function searchSessions(query: string, limit = 100): Session[] {
+export function searchSessions(query: string, limit = 100, organisationId?: string): Session[] {
   const db = initDb();
   const like = `%${query.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+  const orgClause = organisationId ? ' AND organisation_id = ?' : '';
+  const orgParams = organisationId ? [organisationId] : [];
   const rows = db
     .prepare(
       `SELECT * FROM sessions
-       WHERE title LIKE ? ESCAPE '\\' OR employee LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\'
+       WHERE (title LIKE ? ESCAPE '\\' OR employee LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\')${orgClause}
        ORDER BY last_activity DESC LIMIT ?`,
     )
-    .all(like, like, like, limit) as Record<string, unknown>[];
+    .all(like, like, like, ...orgParams, limit) as Record<string, unknown>[];
   return rows.map(rowToSession);
 }
 
@@ -488,11 +1016,13 @@ export function listChildSessions(parentSessionId: string): Session[] {
 }
 
 /** Total session count per group, so the UI can show accurate "+N more". */
-export function getSessionGroupCounts(): Record<string, number> {
+export function getSessionGroupCounts(organisationId?: string): Record<string, number> {
   const db = initDb();
+  const where = organisationId ? 'WHERE organisation_id = ?' : '';
+  const params = organisationId ? [organisationId] : [];
   const rows = db
-    .prepare(`SELECT ${GROUP_KEY_SQL} AS grp, COUNT(*) AS n FROM sessions GROUP BY grp`)
-    .all() as Array<{ grp: string; n: number }>;
+    .prepare(`SELECT ${GROUP_KEY_SQL} AS grp, COUNT(*) AS n FROM sessions ${where} GROUP BY grp`)
+    .all(...params) as Array<{ grp: string; n: number }>;
   const out: Record<string, number> = {};
   for (const r of rows) out[r.grp] = r.n;
   return out;
