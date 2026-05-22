@@ -135,6 +135,10 @@ function dispatchOne(org: Organisation, opts: Required<Pick<TaskPickerOptions, "
   updateTask(task.id, { status: "in-progress", leadSessionId: leadSession.id });
   opts.emit("task:dispatched", { taskId: task.id, leadSessionId: leadSession.id, organisationId: org.id });
   opts.emit("queue:updated", { sessionId: leadSession.id, sessionKey });
+  // Actually kick the session manager to drain the queue we just wrote to.
+  // Without this, the queue_items row sits pending forever — session stays
+  // idle, 0 messages. (Bug discovered 2026-05-22 on the first live picker run.)
+  opts.enqueuePrompt(leadSession.id, sessionKey, prompt);
   logger.info(`[picker] Dispatched task ${task.id} to lead ${leadName} (org ${org.name})`);
 
   return true;
