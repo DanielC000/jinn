@@ -910,10 +910,20 @@ export async function startGateway(
   // Phase 6: start the task auto-picker + reconciler.
   const { startTaskPicker } = await import("../scheduler/task-picker.js");
   const { startTaskReconciler } = await import("../scheduler/task-reconciler.js");
+  const { dispatchPendingForSession } = await import("./api.js");
   const taskPicker = startTaskPicker({
     emit,
     isLeadPaused: (sessionKey: string) => sessionManager.getQueue().isPaused(sessionKey),
-    enqueuePrompt: () => {/* enqueue is handled inside picker via registry */ },
+    // After the picker writes to queue_items, drain it via the same path
+    // the web message-send endpoint uses. Without this hop the prompt sits
+    // pending forever — picker logs "Dispatched" but the engine never runs.
+    enqueuePrompt: (sessionId: string) => {
+      try {
+        dispatchPendingForSession(sessionId, apiContext);
+      } catch (err) {
+        logger.warn(`[picker] dispatchPendingForSession failed for ${sessionId}: ${(err as Error)?.message ?? err}`);
+      }
+    },
   });
   const taskReconciler = startTaskReconciler({ emit });
   logger.info("Task picker + reconciler started");
