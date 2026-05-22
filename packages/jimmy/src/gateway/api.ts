@@ -2961,7 +2961,11 @@ async function runWebSession(
     // Resolve the model up front so we can both pass it to the engine and
     // persist it back to the session row on first completion (web sessions
     // are created with model=null when the client doesn't pin one).
-    const resolvedModel = currentSession.model ?? engineConfig.model ?? null;
+    // Precedence: explicit session.model → employee YAML model → global default.
+    // Without the employee layer, per-employee model overrides in YAML are
+    // silently ignored (found 2026-05-22: pm-priya YAML says claude-opus-4-6,
+    // sessions spawned for her ran on the global sonnet default).
+    const resolvedModel = currentSession.model ?? employee?.model ?? engineConfig.model ?? null;
     const persistModel = currentSession.model == null && resolvedModel != null;
 
     let lastHeartbeatAt = 0;
