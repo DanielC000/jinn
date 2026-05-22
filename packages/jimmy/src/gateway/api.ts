@@ -589,6 +589,60 @@ function matchRoute(
 }
 
 /**
+ * Shared close ceremony: archive every bound session, persist close_notes,
+ * flip task to done + closedAt, emit task:closed, fire the retrospective
+ * summariser async. Invoked from BOTH:
+ *   - POST /api/tasks/:id/close (operator path; carries decision body)
+ *   - PATCH /api/tasks/:id status=done (agent path; no decision body)
+ *
+ * Without this shared helper, agents that close tasks via PATCH end up with
+ * no archive + no summary — discovered live 2026-05-22 when jinn closed the
+ * "Verify delegation-event rows" validation task and left the child session
+ * idle + the summary unwritten.
+ *
+ * Spike rejection is handled by callers (only POST /close accepts spikes,
+ * since PATCH has no body for the required decision).
+ */
+async function runCloseCeremony(
+  taskId: string,
+  decision: string | null,
+  context: ApiContext,
+): Promise<{ task: import("../shared/types.js").Task; archivedCount: number }> {
+  const { getTask, updateTask, listSessionsForTask, markSessionArchived, setTaskCloseNotes } =
+    await import("../sessions/registry.js");
+
+  const bound = listSessionsForTask(taskId);
+  let archivedCount = 0;
+  for (const s of bound) {
+    if (s.status !== "archived") {
+      if (markSessionArchived(s.id)) archivedCount += 1;
+    }
+  }
+
+  if (decision) setTaskCloseNotes(taskId, decision);
+
+  const closed = updateTask(taskId, {
+    status: "done",
+    closedAt: new Date().toISOString(),
+  });
+  if (!closed) throw new Error(`runCloseCeremony: task ${taskId} vanished mid-close`);
+
+  context.emit("task:closed", { task: closed, archivedSessions: archivedCount });
+  logger.info(`[tasks] Closed task ${taskId} — archived ${archivedCount} bound session(s)${decision ? ` (with decision, ${decision.length} chars)` : ""}`);
+
+  const cfg = context.getConfig();
+  const summariseEnabled = cfg.tasks?.autoSummarizeOnClose !== false;
+  if (summariseEnabled && archivedCount > 0) {
+    const taskForSummariser = getTask(taskId) ?? closed; // pick up close_notes
+    void runTaskSummariser(taskForSummariser, context).catch((err) => {
+      logger.warn(`[tasks] Summarisation failed for task ${taskId}: ${(err as Error)?.message ?? err}`);
+    });
+  }
+
+  return { task: closed, archivedCount };
+}
+
+/**
  * Run the closed-task retrospective summariser. Invoked fire-and-forget from
  * POST /api/tasks/:id/close; failures are logged but don't surface to the user
  * who already saw "task closed". Emits task:summarized on success.
@@ -1829,19 +1883,25 @@ export async function handleApiRequest(
         if (!["low", "med", "high"].includes(body.priority)) return badRequest(res, "priority must be low | med | high");
         updates.priority = body.priority;
       }
+      // Detect a done-transition up-front so we can route it through the
+      // shared close ceremony (archive bound sessions + fire summariser) rather
+      // than just bumping closedAt. Spike rejection still applies — PATCH has
+      // no decision body.
+      let doneTransition = false;
       if (body.status !== undefined) {
         const next = body.status as
           | "backlog" | "todo" | "in-progress" | "waiting" | "review" | "done" | "stalled";
         const transitionErr = validateTaskStatusTransition(existing.status, next);
         if (transitionErr) return badRequest(res, transitionErr);
-        // Spike v2: closing a spike requires the operator's decision. PATCH
-        // doesn't carry that — route them to POST /api/tasks/:id/close instead.
         if (next === "done" && existing.status !== "done" && existing.kind === "spike") {
           return badRequest(res, "Closing a spike requires its decision — use POST /api/tasks/:id/close with { decision: string }");
         }
-        updates.status = next;
         if (next === "done" && existing.status !== "done") {
-          updates.closedAt = new Date().toISOString();
+          doneTransition = true;
+          // Don't queue status/closedAt into the field-update path; the close
+          // ceremony writes them and runs the rest of the ceremony.
+        } else {
+          updates.status = next;
         }
       }
       if (body.leadSessionId !== undefined) {
@@ -1851,8 +1911,18 @@ export async function handleApiRequest(
         updates.leadSessionId = body.leadSessionId;
       }
 
-      const updated = updateTask(params.id, updates);
+      // Apply any non-done field updates first (title/description/priority/
+      // leadSessionId/non-done status). For pure done-transition PATCHes this
+      // is a no-op.
+      let updated = Object.keys(updates).length > 0 ? updateTask(params.id, updates) : existing;
       if (!updated) return notFound(res);
+
+      if (doneTransition) {
+        const { task: closed, archivedCount } = await runCloseCeremony(params.id, null, context);
+        context.emit("task:status-changed", { task: closed, from: existing.status, to: "done" });
+        return json(res, { ...closed, archivedSessions: archivedCount });
+      }
+
       if (updates.status && updates.status !== existing.status) {
         context.emit("task:status-changed", { task: updated, from: existing.status, to: updates.status });
         if (updates.status === "todo" && existing.status === "backlog") {
@@ -1875,14 +1945,12 @@ export async function handleApiRequest(
     // Standard tasks can also pass `decision` optionally — same storage.
     params = matchRoute("/api/tasks/:id/close", pathname);
     if (method === "POST" && params) {
-      const { getTask, updateTask, listSessionsForTask, markSessionArchived, setTaskCloseNotes } =
-        await import("../sessions/registry.js");
+      const { getTask } = await import("../sessions/registry.js");
       const existing = getTask(params.id);
       if (!existing) return notFound(res);
       if (existing.status === "done") return badRequest(res, "Task is already closed");
 
       // Read optional decision body — required for spikes, optional otherwise.
-      // Tolerate empty/no-body (close without notes is the standard-task default).
       let decision: string | null = null;
       try {
         const raw = await readBody(req);
@@ -1897,34 +1965,7 @@ export async function handleApiRequest(
         return badRequest(res, "Spike close requires { decision: string } — the spike's deliverable IS the decision");
       }
 
-      const bound = listSessionsForTask(params.id);
-      let archivedCount = 0;
-      for (const s of bound) {
-        if (s.status !== "archived") {
-          if (markSessionArchived(s.id)) archivedCount += 1;
-        }
-      }
-
-      if (decision) setTaskCloseNotes(params.id, decision);
-
-      const closed = updateTask(params.id, {
-        status: "done",
-        closedAt: new Date().toISOString(),
-      });
-      context.emit("task:closed", { task: closed, archivedSessions: archivedCount });
-      logger.info(`[tasks] Closed task ${params.id} — archived ${archivedCount} bound session(s)${decision ? ` (with decision, ${decision.length} chars)` : ""}`);
-
-      // Fire-and-forget retrospective summariser. The summariser reads
-      // close_notes off the task row, so persisting decision above ensures
-      // the summary quotes it.
-      const cfg = context.getConfig();
-      const summariseEnabled = cfg.tasks?.autoSummarizeOnClose !== false;
-      if (closed && summariseEnabled && archivedCount > 0) {
-        void runTaskSummariser(closed, context).catch((err) => {
-          logger.warn(`[tasks] Summarisation failed for task ${closed.id}: ${(err as Error)?.message ?? err}`);
-        });
-      }
-
+      const { task: closed, archivedCount } = await runCloseCeremony(params.id, decision, context);
       return json(res, { ...closed, archivedSessions: archivedCount });
     }
 
