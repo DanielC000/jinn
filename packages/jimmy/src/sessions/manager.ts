@@ -385,7 +385,7 @@ export class SessionManager {
       // Heuristic preflight warning: Claude usage limits don't expose a precise "remaining" budget.
       // If we've hit the limit recently and this looks like a heavy turn, warn before we spend time.
       if (decorateMessages && session.engine === "claude" && isLikelyNearClaudeUsageLimit()) {
-        const modelName = (session.model ?? engineConfig.model ?? "").toLowerCase();
+        const modelName = (session.model ?? employee?.model ?? engineConfig.model ?? "").toLowerCase();
         const heavyEffort = ["high", "xhigh", "max"].includes((effortLevel || "").toLowerCase());
         const heavyModel = modelName.includes("opus");
         const looksBig = attachments.length > 0 || msg.text.length > 6000;
@@ -407,7 +407,7 @@ export class SessionManager {
         systemPrompt: withSummaryPrompt(systemPrompt, session),
         cwd: JINN_HOME,
         bin: engineConfig.bin,
-        model: session.model ?? engineConfig.model,
+        model: session.model ?? employee?.model ?? engineConfig.model,
         effortLevel,
         cliFlags: employee?.cliFlags,
         mcpConfigPath,
