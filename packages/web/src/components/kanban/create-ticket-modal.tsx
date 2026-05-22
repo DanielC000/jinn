@@ -23,6 +23,7 @@ interface CreateTicketModalProps {
     priority: TicketPriority
     assigneeId: string | null
     kind: TicketKind
+    timeBoxHours: number | null
   }) => void
 }
 
@@ -40,6 +41,7 @@ const initialState = {
   priority: 'medium' as TicketPriority,
   assigneeId: '' as string,
   kind: 'standard' as TicketKind,
+  timeBoxHours: '' as string,
 }
 
 export function CreateTicketModal({
@@ -63,12 +65,15 @@ export function CreateTicketModal({
     e.preventDefault()
     if (!form.title.trim()) return
 
+    const tb = form.timeBoxHours.trim()
+    const timeBoxHours = tb ? Math.max(1, Math.round(Number(tb))) : null
     onSubmit({
       title: form.title.trim(),
       description: form.description.trim(),
       priority: form.priority,
       assigneeId: form.assigneeId || null,
       kind: form.kind,
+      timeBoxHours: Number.isFinite(timeBoxHours as number) ? (timeBoxHours as number | null) : null,
     })
 
     resetForm()
@@ -199,6 +204,27 @@ export function CreateTicketModal({
               })}
             </div>
           </div>
+
+          {/* Time-box (spike-only). Optional informational hint, not enforced. */}
+          {form.kind === 'spike' && (
+            <div className="flex flex-col gap-[var(--space-1)]">
+              <label
+                htmlFor="ticket-timebox"
+                className="text-[length:var(--text-caption1)] font-[var(--weight-medium)] text-[var(--text-secondary)]"
+              >
+                Time-box (hours, optional)
+              </label>
+              <input
+                id="ticket-timebox"
+                type="number"
+                min={1}
+                placeholder="e.g. 8"
+                value={form.timeBoxHours}
+                onChange={(e) => setForm((f) => ({ ...f, timeBoxHours: e.target.value }))}
+                className="text-[length:var(--text-body)] text-[var(--text-primary)] py-2 px-3 border border-[var(--separator)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] outline-none font-[inherit]"
+              />
+            </div>
+          )}
 
           {/* Assignee */}
           <div className="flex flex-col gap-[var(--space-1)]">

@@ -294,6 +294,18 @@ export interface Task {
    * decision-style summary on close.
    */
   kind: TaskKind;
+  /**
+   * Optional informational time-box, in hours. Meaningful on spikes (a spike
+   * without a time-box loses its core constraint), accepted on standard tasks
+   * too. Not enforced — operator decides when to close. UI shows "Time-box: 8h".
+   */
+  timeBoxHours: number | null;
+  /**
+   * Free-form text the operator supplies at close. Required for spike close
+   * (the spike's *decision*); optional on standard close. Prepended to the
+   * summariser prompt so the retrospective quotes it verbatim.
+   */
+  closeNotes: string | null;
 }
 
 export interface CronDelivery {

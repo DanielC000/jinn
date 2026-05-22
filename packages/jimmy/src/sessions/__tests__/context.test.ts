@@ -19,6 +19,8 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     summary: null,
     summaryGeneratedAt: null,
     kind: "standard",
+    timeBoxHours: null,
+    closeNotes: null,
     ...overrides,
   };
 }

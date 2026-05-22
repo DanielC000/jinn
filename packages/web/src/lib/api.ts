@@ -92,6 +92,10 @@ export interface Task {
   summaryGeneratedAt?: string | null;
   /** Task kind — defaults to "standard" on legacy rows; new rows can be created as "spike". */
   kind?: TaskKind;
+  /** Informational time-box in hours (no enforcement). */
+  timeBoxHours?: number | null;
+  /** Operator-supplied close notes (the spike's decision). */
+  closeNotes?: string | null;
 }
 
 /**
@@ -248,9 +252,14 @@ export const api = {
       status?: TaskStatus;
       supersedesTaskId?: string | null;
       kind?: TaskKind;
+      timeBoxHours?: number | null;
     },
   ) =>
     post<Task>(`/api/organisations/${encodeURIComponent(organisationId)}/tasks`, data),
+  closeTask: (id: string, decision?: string) =>
+    post<Task>(`/api/tasks/${encodeURIComponent(id)}/close`, decision ? { decision } : {}),
+  resummarizeTask: (id: string) =>
+    post<{ accepted: boolean; taskId: string }>(`/api/tasks/${encodeURIComponent(id)}/resummarize`, {}),
   getTask: (id: string) => get<Task>(`/api/tasks/${encodeURIComponent(id)}`),
   updateTask: (
     id: string,
@@ -272,7 +281,6 @@ export const api = {
       return res.json() as Promise<Task>;
     });
   },
-  closeTask: (id: string) => post<Task>(`/api/tasks/${encodeURIComponent(id)}/close`, {}),
   deleteTask: (id: string) => del<{ status: string }>(`/api/tasks/${encodeURIComponent(id)}`),
   getEmployee: (name: string) => get<Employee>(`/api/org/employees/${name}`),
   getDepartmentBoard: (name: string) =>

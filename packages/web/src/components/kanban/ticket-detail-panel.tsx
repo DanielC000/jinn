@@ -1,5 +1,5 @@
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Employee } from '@/lib/api'
 import type { KanbanTicket, TicketStatus, TicketPriority } from '@/lib/kanban/types'
 import { PRIORITY_COLORS, COLUMNS } from '@/lib/kanban/types'
@@ -32,27 +32,114 @@ function StatusBadge({ status }: { status: TicketStatus }) {
 }
 
 /**
- * Retrospective summary, rendered as a collapsed-by-default block on closed
- * tasks (status=done). Populated by the closed-task summariser on close — may
- * be absent if the task was closed before that feature, or if summarisation
- * failed (in which case operator can re-trigger via DB or future endpoint).
+ * Retrospective summary + operator's close notes, rendered on closed tasks
+ * (status=done). Summary is populated by the async summariser; closeNotes
+ * is the operator's verbatim decision string (mandatory for spike close).
+ * The Regenerate button re-runs the summariser via POST /resummarize.
  */
-function TaskSummary({ ticket }: { ticket: KanbanTicket }) {
-  if (!ticket.summary) return null
+function TaskSummary({
+  ticket,
+  onResummarize,
+}: {
+  ticket: KanbanTicket
+  onResummarize?: () => void
+}) {
+  const hasSummary = Boolean(ticket.summary)
+  const hasNotes = Boolean(ticket.closeNotes)
+  if (!hasSummary && !hasNotes) return null
+  const canResummarize = ticket.status === 'done' && Boolean(onResummarize)
+
   return (
     <div className="px-[var(--space-5)] pb-[var(--space-4)]">
       <div className="h-px bg-[var(--separator)] mb-[var(--space-3)]" />
-      <div className="text-[length:var(--text-caption1)] font-semibold text-[var(--text-tertiary)] uppercase tracking-[0.5px] mb-[var(--space-2)] flex items-center justify-between">
-        <span>Retrospective</span>
-        {ticket.summaryGeneratedAt && (
-          <span className="text-[length:var(--text-caption2)] font-normal normal-case tracking-normal text-[var(--text-tertiary)]">
-            {new Date(ticket.summaryGeneratedAt).toLocaleString()}
-          </span>
-        )}
+      {hasNotes && (
+        <div className="mb-[var(--space-3)]">
+          <div className="text-[length:var(--text-caption1)] font-semibold text-[var(--text-tertiary)] uppercase tracking-[0.5px] mb-[var(--space-2)]">
+            {ticket.kind === 'spike' ? 'Decision' : 'Close notes'}
+          </div>
+          <div className="text-[length:var(--text-footnote)] text-[var(--text-secondary)] leading-[1.5] whitespace-pre-wrap">
+            {ticket.closeNotes}
+          </div>
+        </div>
+      )}
+      {hasSummary && (
+        <>
+          <div className="text-[length:var(--text-caption1)] font-semibold text-[var(--text-tertiary)] uppercase tracking-[0.5px] mb-[var(--space-2)] flex items-center justify-between gap-[var(--space-2)]">
+            <span>Retrospective</span>
+            <span className="flex items-center gap-[var(--space-2)]">
+              {ticket.summaryGeneratedAt && (
+                <span className="text-[length:var(--text-caption2)] font-normal normal-case tracking-normal text-[var(--text-tertiary)]">
+                  {new Date(ticket.summaryGeneratedAt).toLocaleString()}
+                </span>
+              )}
+              {canResummarize && (
+                <button
+                  type="button"
+                  onClick={onResummarize}
+                  title="Re-run the retrospective summariser"
+                  className="text-[length:var(--text-caption2)] font-semibold text-[var(--accent)] bg-transparent border border-[var(--accent)] rounded-[var(--radius-sm)] px-[var(--space-2)] py-[1px] cursor-pointer normal-case tracking-normal"
+                >
+                  Regenerate
+                </button>
+              )}
+            </span>
+          </div>
+          <div className="text-[length:var(--text-footnote)] text-[var(--text-secondary)] leading-[1.5] whitespace-pre-wrap">
+            {ticket.summary}
+          </div>
+        </>
+      )}
+      {!hasSummary && hasNotes && canResummarize && (
+        <button
+          type="button"
+          onClick={onResummarize}
+          className="text-[length:var(--text-caption2)] font-semibold text-[var(--accent)] bg-transparent border border-[var(--accent)] rounded-[var(--radius-sm)] px-[var(--space-2)] py-[var(--space-1)] cursor-pointer mt-[var(--space-2)]"
+        >
+          Generate retrospective
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Spike-only close control: inline textarea + Close button. Standard tasks
+ * close via the existing Move-to-Done button (which doesn't require notes).
+ * Skipped entirely when the task is already done.
+ */
+function CloseSpikeControl({
+  ticket,
+  onCloseTask,
+}: {
+  ticket: KanbanTicket
+  onCloseTask?: (decision?: string) => void
+}) {
+  const [decision, setDecision] = useState('')
+  if (ticket.kind !== 'spike' || ticket.status === 'done' || !onCloseTask) return null
+  return (
+    <div className="px-[var(--space-5)] pb-[var(--space-4)]">
+      <div className="text-[length:var(--text-caption1)] font-semibold text-[var(--text-tertiary)] uppercase tracking-[0.5px] mb-[var(--space-2)]">
+        Close spike with decision
       </div>
-      <div className="text-[length:var(--text-footnote)] text-[var(--text-secondary)] leading-[1.5] whitespace-pre-wrap">
-        {ticket.summary}
-      </div>
+      <textarea
+        placeholder="What did you decide? This becomes the spike's deliverable."
+        rows={3}
+        value={decision}
+        onChange={(e) => setDecision(e.target.value)}
+        className="w-full text-[length:var(--text-footnote)] text-[var(--text-primary)] resize-y min-h-[64px] py-2 px-3 border border-[var(--separator)] rounded-[var(--radius-md)] bg-[var(--fill-tertiary)] outline-none font-[inherit] mb-[var(--space-2)]"
+      />
+      <button
+        type="button"
+        disabled={!decision.trim()}
+        onClick={() => onCloseTask(decision.trim())}
+        className="w-full py-[var(--space-2)] px-[var(--space-3)] rounded-[var(--radius-md)] border-none bg-[var(--accent)] text-white text-[length:var(--text-footnote)] font-semibold transition-opacity duration-150 ease-linear"
+        style={{
+          cursor: decision.trim() ? 'pointer' : 'default',
+          opacity: decision.trim() ? 1 : 0.5,
+        }}
+      >
+        Close spike
+      </button>
     </div>
   )
 }
@@ -138,6 +225,11 @@ interface TicketDetailPanelProps {
   onAssigneeChange: (employeeName: string | null) => void
   onDelete: () => void
   onTicketSelect?: (ticket: KanbanTicket) => void
+  /** POST /api/tasks/:id/close — used for spike close (mandatory decision)
+   *  and for regular close when an explicit decision/notes string is supplied. */
+  onCloseTask?: (decision?: string) => void
+  /** POST /api/tasks/:id/resummarize — re-run the retrospective summariser. */
+  onResummarize?: () => void
 }
 
 export function TicketDetailPanel({
@@ -149,6 +241,8 @@ export function TicketDetailPanel({
   onAssigneeChange,
   onDelete,
   onTicketSelect,
+  onCloseTask,
+  onResummarize,
 }: TicketDetailPanelProps) {
   const closeRef = useRef<HTMLButtonElement>(null)
 
@@ -214,6 +308,14 @@ export function TicketDetailPanel({
                   Spike
                 </span>
               )}
+              {ticket.timeBoxHours && (
+                <span
+                  title="Informational time-box; not enforced"
+                  className="text-[length:var(--text-caption2)] text-[var(--text-tertiary)]"
+                >
+                  {ticket.timeBoxHours}h
+                </span>
+              )}
             </div>
 
             {/* Assignee */}
@@ -237,27 +339,34 @@ export function TicketDetailPanel({
               Move to
             </div>
             <div className="flex gap-[var(--space-1)] flex-wrap">
-              {COLUMNS.map(col => {
-                const isCurrent = col.id === ticket.status
-                return (
-                  <button
-                    key={col.id}
-                    onClick={() => { if (!isCurrent) onStatusChange(col.id) }}
-                    disabled={isCurrent}
-                    className="text-[length:var(--text-caption2)] font-semibold py-[3px] px-[var(--space-2)] rounded-[var(--radius-sm)] border-none transition-all duration-[120ms] ease-linear"
-                    style={{
-                      cursor: isCurrent ? 'default' : 'pointer',
-                      background: isCurrent ? accentColor : 'var(--fill-tertiary)',
-                      color: isCurrent ? '#fff' : 'var(--text-secondary)',
-                      opacity: isCurrent ? 1 : 0.8,
-                    }}
-                  >
-                    {col.title}
-                  </button>
-                )
-              })}
+              {COLUMNS
+                // Spike v2: hide the Done button — spikes must close via the
+                // dedicated close-with-decision flow below, since the backend
+                // rejects PATCH-to-done for kind=spike.
+                .filter(col => !(col.id === 'done' && ticket.kind === 'spike'))
+                .map(col => {
+                  const isCurrent = col.id === ticket.status
+                  return (
+                    <button
+                      key={col.id}
+                      onClick={() => { if (!isCurrent) onStatusChange(col.id) }}
+                      disabled={isCurrent}
+                      className="text-[length:var(--text-caption2)] font-semibold py-[3px] px-[var(--space-2)] rounded-[var(--radius-sm)] border-none transition-all duration-[120ms] ease-linear"
+                      style={{
+                        cursor: isCurrent ? 'default' : 'pointer',
+                        background: isCurrent ? accentColor : 'var(--fill-tertiary)',
+                        color: isCurrent ? '#fff' : 'var(--text-secondary)',
+                        opacity: isCurrent ? 1 : 0.8,
+                      }}
+                    >
+                      {col.title}
+                    </button>
+                  )
+                })}
             </div>
           </div>
+
+          <CloseSpikeControl ticket={ticket} onCloseTask={onCloseTask} />
 
           {/* Assignee picker */}
           <div className="px-[var(--space-5)] pb-[var(--space-4)]">
@@ -284,7 +393,7 @@ export function TicketDetailPanel({
             </div>
           )}
 
-          <TaskSummary ticket={ticket} />
+          <TaskSummary ticket={ticket} onResummarize={onResummarize} />
           <CrossTaskRefs ticket={ticket} allTickets={allTickets} onTicketSelect={onTicketSelect} />
         </div>
 

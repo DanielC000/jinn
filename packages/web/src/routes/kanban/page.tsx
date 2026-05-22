@@ -16,7 +16,7 @@ import { KanbanBoard } from '@/components/kanban/kanban-board'
 import { CreateTicketModal } from '@/components/kanban/create-ticket-modal'
 import { TicketDetailPanel } from '@/components/kanban/ticket-detail-panel'
 import { useOrg } from '@/hooks/use-employees'
-import { useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRedispatchTask } from '@/hooks/use-tasks'
+import { useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRedispatchTask, useCloseTask, useResummarizeTask } from '@/hooks/use-tasks'
 import { useCurrentOrganisation } from '@/context/current-organisation'
 import { api } from '@/lib/api'
 import { useQueryClient } from '@tanstack/react-query'
@@ -110,6 +110,8 @@ function taskToTicket(
     summary: task.summary ?? null,
     summaryGeneratedAt: task.summaryGeneratedAt ?? null,
     kind: task.kind ?? 'standard',
+    timeBoxHours: task.timeBoxHours ?? null,
+    closeNotes: task.closeNotes ?? null,
   }
 }
 
@@ -121,6 +123,8 @@ export default function KanbanPage() {
   const updateTaskMutation = useUpdateTask()
   const deleteTaskMutation = useDeleteTask()
   const redispatchTaskMutation = useRedispatchTask()
+  const closeTaskMutation = useCloseTask()
+  const resummarizeTaskMutation = useResummarizeTask()
   const qc = useQueryClient()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -163,7 +167,7 @@ export default function KanbanPage() {
   }, [tasksQuery.data, leadEmployee])
 
   const handleCreateTicket = useCallback(
-    (data: { title: string; description: string; priority: TicketPriority; assigneeId: string | null; kind: 'standard' | 'spike' }) => {
+    (data: { title: string; description: string; priority: TicketPriority; assigneeId: string | null; kind: 'standard' | 'spike'; timeBoxHours: number | null }) => {
       const priority = data.priority === 'medium' ? 'med' : data.priority
       createTaskMutation.mutate({
         title: data.title,
@@ -171,6 +175,7 @@ export default function KanbanPage() {
         priority: priority as 'low' | 'med' | 'high',
         status: 'backlog',
         kind: data.kind,
+        timeBoxHours: data.timeBoxHours,
       })
     },
     [createTaskMutation],
@@ -436,6 +441,11 @@ export default function KanbanPage() {
             }}
             onDelete={() => setDeleteConfirm(selectedTicket)}
             onTicketSelect={(t) => setSelectedTicket(t)}
+            onCloseTask={(decision) => {
+              closeTaskMutation.mutate({ id: selectedTicket.id, decision })
+              setSelectedTicket(null)
+            }}
+            onResummarize={() => resummarizeTaskMutation.mutate(selectedTicket.id)}
           />
         )}
 
