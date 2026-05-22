@@ -1771,6 +1771,13 @@ export async function handleApiRequest(
       if (kind !== undefined && kind !== "standard" && kind !== "spike") {
         return badRequest(res, "kind must be 'standard' or 'spike'");
       }
+      let timeBoxHours: number | null = null;
+      if (body.timeBoxHours !== undefined && body.timeBoxHours !== null) {
+        if (typeof body.timeBoxHours !== "number" || !Number.isFinite(body.timeBoxHours) || body.timeBoxHours <= 0) {
+          return badRequest(res, "timeBoxHours must be a positive number");
+        }
+        timeBoxHours = Math.round(body.timeBoxHours);
+      }
       const task = createTask({
         organisationId: params.orgId,
         title: body.title.trim(),
@@ -1779,6 +1786,7 @@ export async function handleApiRequest(
         status,
         supersedesTaskId: body.supersedesTaskId ?? null,
         kind,
+        timeBoxHours,
       });
       context.emit("task:created", { task });
       return json(res, task, 201);
@@ -1826,6 +1834,11 @@ export async function handleApiRequest(
           | "backlog" | "todo" | "in-progress" | "waiting" | "review" | "done" | "stalled";
         const transitionErr = validateTaskStatusTransition(existing.status, next);
         if (transitionErr) return badRequest(res, transitionErr);
+        // Spike v2: closing a spike requires the operator's decision. PATCH
+        // doesn't carry that — route them to POST /api/tasks/:id/close instead.
+        if (next === "done" && existing.status !== "done" && existing.kind === "spike") {
+          return badRequest(res, "Closing a spike requires its decision — use POST /api/tasks/:id/close with { decision: string }");
+        }
         updates.status = next;
         if (next === "done" && existing.status !== "done") {
           updates.closedAt = new Date().toISOString();
@@ -1855,16 +1868,35 @@ export async function handleApiRequest(
     // archives every bound session (no successor — task is terminal), then
     // fires the retrospective summariser asynchronously (best-effort, doesn't
     // block the HTTP response). Emits task:closed; emits task:summarized later.
+    //
+    // Spike v2: { decision: string } is required for kind=spike close
+    // (the spike's deliverable IS the decision). Persisted as close_notes
+    // and prepended to the summariser prompt so the retrospective quotes it.
+    // Standard tasks can also pass `decision` optionally — same storage.
     params = matchRoute("/api/tasks/:id/close", pathname);
     if (method === "POST" && params) {
-      const { getTask, updateTask, listSessionsForTask, markSessionArchived } = await import("../sessions/registry.js");
+      const { getTask, updateTask, listSessionsForTask, markSessionArchived, setTaskCloseNotes } =
+        await import("../sessions/registry.js");
       const existing = getTask(params.id);
       if (!existing) return notFound(res);
       if (existing.status === "done") return badRequest(res, "Task is already closed");
 
-      // Phase 7: archive every session bound to this task. Summary is generated
-      // asynchronously below — review/improvement item #2 from the v0.14.0
-      // workflow review.
+      // Read optional decision body — required for spikes, optional otherwise.
+      // Tolerate empty/no-body (close without notes is the standard-task default).
+      let decision: string | null = null;
+      try {
+        const raw = await readBody(req);
+        if (raw.trim()) {
+          const parsed = JSON.parse(raw) as { decision?: unknown };
+          if (typeof parsed?.decision === "string" && parsed.decision.trim()) {
+            decision = parsed.decision.trim();
+          }
+        }
+      } catch { /* malformed body — fall through, validation below handles missing decision */ }
+      if (existing.kind === "spike" && !decision) {
+        return badRequest(res, "Spike close requires { decision: string } — the spike's deliverable IS the decision");
+      }
+
       const bound = listSessionsForTask(params.id);
       let archivedCount = 0;
       for (const s of bound) {
@@ -1873,17 +1905,18 @@ export async function handleApiRequest(
         }
       }
 
+      if (decision) setTaskCloseNotes(params.id, decision);
+
       const closed = updateTask(params.id, {
         status: "done",
         closedAt: new Date().toISOString(),
       });
       context.emit("task:closed", { task: closed, archivedSessions: archivedCount });
-      logger.info(`[tasks] Closed task ${params.id} — archived ${archivedCount} bound session(s)`);
+      logger.info(`[tasks] Closed task ${params.id} — archived ${archivedCount} bound session(s)${decision ? ` (with decision, ${decision.length} chars)` : ""}`);
 
-      // Fire-and-forget retrospective summariser. Closed-task summarisation
-      // doesn't gate the HTTP response — the operator gets immediate feedback
-      // that the task is closed; the summary trickles in seconds later via
-      // task:summarized. Disable via config.tasks.autoSummarizeOnClose=false.
+      // Fire-and-forget retrospective summariser. The summariser reads
+      // close_notes off the task row, so persisting decision above ensures
+      // the summary quotes it.
       const cfg = context.getConfig();
       const summariseEnabled = cfg.tasks?.autoSummarizeOnClose !== false;
       if (closed && summariseEnabled && archivedCount > 0) {
@@ -1893,6 +1926,23 @@ export async function handleApiRequest(
       }
 
       return json(res, { ...closed, archivedSessions: archivedCount });
+    }
+
+    // POST /api/tasks/:id/resummarize — regenerate the retrospective.
+    // Useful when: the original summariser run errored, the prompt template
+    // changed, or the operator wants a fresh pass with updated close_notes.
+    // Fire-and-forget like close; returns 202 immediately.
+    params = matchRoute("/api/tasks/:id/resummarize", pathname);
+    if (method === "POST" && params) {
+      const { getTask } = await import("../sessions/registry.js");
+      const task = getTask(params.id);
+      if (!task) return notFound(res);
+      void runTaskSummariser(task, context).catch((err) => {
+        logger.warn(`[tasks] Resummarisation failed for task ${task.id}: ${(err as Error)?.message ?? err}`);
+      });
+      res.writeHead(202, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ accepted: true, taskId: task.id }));
+      return;
     }
 
     // POST /api/sessions/:sessionId/tools/create-task — Phase 8a.

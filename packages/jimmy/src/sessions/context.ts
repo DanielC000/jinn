@@ -444,6 +444,9 @@ function buildTaskContextBlock(ctx: TaskContext): string {
   if (isSpike) {
     lines.push(`- Kind: **SPIKE** (time-boxed exploration — deliverable is a *decision*, not an artifact)`);
   }
+  if (task.timeBoxHours) {
+    lines.push(`- Time-box: ${task.timeBoxHours}h (informational — operator decides when to close)`);
+  }
   if (task.priority && task.priority !== "med") {
     lines.push(`- Priority: ${task.priority}`);
   }

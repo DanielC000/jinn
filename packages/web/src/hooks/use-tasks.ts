@@ -36,6 +36,7 @@ export function useCreateTask() {
       status?: TaskStatus
       supersedesTaskId?: string | null
       kind?: 'standard' | 'spike'
+      timeBoxHours?: number | null
     }) => {
       if (!orgId) throw new Error("No active Organisation")
       return api.createTask(orgId, data)
@@ -59,8 +60,22 @@ export function useUpdateTask() {
 export function useCloseTask() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id: string) => api.closeTask(id),
+    mutationFn: (args: { id: string; decision?: string }) => api.closeTask(args.id, args.decision),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.tasks.root }),
+  })
+}
+
+export function useResummarizeTask() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.resummarizeTask(id),
+    // Summary regenerates asynchronously — poll the tasks list a few seconds
+    // later to pick it up. (Real-time push happens via the task:summarized SSE
+    // event; this fallback ensures the panel reflects the new summary even if
+    // the client wasn't listening when the event fired.)
+    onSuccess: () => {
+      setTimeout(() => qc.invalidateQueries({ queryKey: queryKeys.tasks.root }), 5000)
+    },
   })
 }
 

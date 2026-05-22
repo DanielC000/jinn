@@ -418,6 +418,8 @@ function rowToTask(row: Record<string, unknown>): Task {
     summary: (row.summary as string) ?? null,
     summaryGeneratedAt: (row.summary_generated_at as string) ?? null,
     kind: ((row.kind as string) ?? 'standard') as TaskKind,
+    timeBoxHours: (row.time_box_hours as number) ?? null,
+    closeNotes: (row.close_notes as string) ?? null,
   };
 }
 
@@ -430,6 +432,7 @@ export interface CreateTaskOpts {
   status?: TaskStatus;
   supersedesTaskId?: string | null;
   kind?: TaskKind;
+  timeBoxHours?: number | null;
 }
 
 export function createTask(opts: CreateTaskOpts): Task {
@@ -439,9 +442,10 @@ export function createTask(opts: CreateTaskOpts): Task {
   const status = opts.status ?? 'backlog';
   const priority = opts.priority ?? 'med';
   const kind = opts.kind ?? 'standard';
+  const timeBoxHours = opts.timeBoxHours ?? null;
   db.prepare(
-    `INSERT INTO tasks (id, organisation_id, title, description, priority, status, supersedes_task_id, kind, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO tasks (id, organisation_id, title, description, priority, status, supersedes_task_id, kind, time_box_hours, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     opts.organisationId,
@@ -451,6 +455,7 @@ export function createTask(opts: CreateTaskOpts): Task {
     status,
     opts.supersedesTaskId ?? null,
     kind,
+    timeBoxHours,
     now,
     now,
   );
@@ -469,6 +474,8 @@ export function createTask(opts: CreateTaskOpts): Task {
     summary: null,
     summaryGeneratedAt: null,
     kind,
+    timeBoxHours,
+    closeNotes: null,
   };
 }
 
@@ -481,6 +488,14 @@ export function setTaskSummary(id: string, summary: string | null): Task | undef
   const now = new Date().toISOString();
   db.prepare(`UPDATE tasks SET summary = ?, summary_generated_at = ?, updated_at = ? WHERE id = ?`)
     .run(summary, summary ? now : null, now, id);
+  return getTask(id);
+}
+
+/** Persist the operator-supplied close notes (the spike's decision text). */
+export function setTaskCloseNotes(id: string, notes: string | null): Task | undefined {
+  const db = initDb();
+  db.prepare(`UPDATE tasks SET close_notes = ?, updated_at = ? WHERE id = ?`)
+    .run(notes, new Date().toISOString(), id);
   return getTask(id);
 }
 
@@ -695,6 +710,12 @@ export function migrateTasksSchema(database: Database.Database): void {
     // and injected into the agent's task context so it knows what kind of
     // work the task represents.
     ['kind', 'TEXT', "'standard'"],
+    // Spike v2: informational time box (hours). No enforcement — surfaced in
+    // UI + agent context as a signal. Operator decides when to close.
+    ['time_box_hours', 'INTEGER'],
+    // Spike v2: decision text supplied at close. Required for spike close,
+    // prepended to the summariser prompt so the retrospective can quote it.
+    ['close_notes', 'TEXT'],
   ];
   for (const [name, type, defaultVal] of missingColumns) {
     if (!colNames.has(name)) {

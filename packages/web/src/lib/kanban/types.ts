@@ -46,6 +46,10 @@ export interface KanbanTicket {
   summaryGeneratedAt?: string | null
   /** Task kind — standard (default, artifact deliverable) or spike (decision deliverable). */
   kind?: TicketKind
+  /** Informational time-box in hours (no enforcement). */
+  timeBoxHours?: number | null
+  /** Operator's close notes — for spikes, the decision. */
+  closeNotes?: string | null
 }
 
 export interface KanbanColumn {
