@@ -5,7 +5,7 @@ import type { InterruptibleEngine, EngineRunOpts, EngineResult, EngineRateLimitI
 import { logger } from "../shared/logger.js";
 import { JINN_HOME, CLAUDE_SETTINGS_DIR, HOOK_RELAY_SCRIPT } from "../shared/paths.js";
 import { writeSessionSettings } from "../shared/claude-settings.js";
-import { resolveExecutable } from "../shared/resolve-bin.js";
+import { resolveExecutable } from "../shared/resolve-bin.js"; // Fork-local: Windows PATH fix
 import { PtyLifecycleManager, type PtyHandle } from "./pty-lifecycle.js";
 import type { HookRegistry, HookPayload } from "../gateway/hook-registry.js";
 
@@ -534,6 +534,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
       attachments: opts.attachments,
     });
     const env = this.buildPtyEnv();
+    // Fork-local: resolve to an absolute path — node-pty's Windows agent doesn't search %PATH%.
     const bin = resolveExecutable(opts.bin || "claude");
     const geom = this.lastGeom.get(jinnSessionId);
     logger.info(`InteractiveClaudeEngine spawning ${bin} (resume: ${opts.resumeSessionId || "none"}, geom: ${geom ? `${geom.cols}×${geom.rows}` : "default"})`);
@@ -571,6 +572,7 @@ export class InteractiveClaudeEngine implements InterruptibleEngine {
     if (opts.claudeSessionId) args.unshift("--resume", opts.claudeSessionId);
     if (opts.model) args.push("--model", opts.model);
     const env = this.buildPtyEnv();
+    // Fork-local: resolve to an absolute path — node-pty's Windows agent doesn't search %PATH%.
     const bin = resolveExecutable(opts.bin || "claude");
     // Caller (pty-ws) passes the client's current cols/rows. Cache them so a
     // future cold spawn through run() picks up the right geometry too.

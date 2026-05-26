@@ -1,3 +1,6 @@
+// Fork-local: Windows PATH/PATHEXT resolution for node-pty spawns. Upstream is
+// Unix-first and never hits this; defend the whole file + both callsites in
+// claude-interactive.ts on every upstream sync.
 import fs from "node:fs";
 import path from "node:path";
 

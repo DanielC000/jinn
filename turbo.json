@@ -5,6 +5,10 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".next/**", "out/**"]
     },
+    "jinn-cli#build": {
+      "dependsOn": ["^build", "@jinn/web#build"],
+      "outputs": ["dist/**"]
+    },
     "dev": {
       "cache": false,
       "persistent": true
